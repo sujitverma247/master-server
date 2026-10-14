@@ -1,5 +1,6 @@
 using MasterServer.Data;
 using MasterServer.Keys;
+using MasterServer.Mail;
 using Microsoft.EntityFrameworkCore;
 
 namespace MasterServer.Payments;
@@ -63,6 +64,7 @@ public static class OrderFulfillment
         order.UpdatedAt = DateTime.UtcNow;
         if (!string.IsNullOrEmpty(externalPaymentId))
             order.ExternalPaymentId = externalPaymentId;
+        await MailOutbox.EnqueueLicenseIssuedAsync(db, license, order, ct);
         return null;
     }
 
@@ -80,13 +82,15 @@ public static class OrderFulfillment
         if (order.Status == OrderStatuses.Refunded) return null;
         if (order.Status != OrderStatuses.Paid) return "order is not paid";
 
+        License? license = null;
         if (order.LicenseId is int lid)
         {
-            var license = await db.Licenses.FirstOrDefaultAsync(l => l.Id == lid, ct);
+            license = await db.Licenses.FirstOrDefaultAsync(l => l.Id == lid, ct);
             if (license is not null) license.IsRevoked = true;
         }
         order.Status = OrderStatuses.Refunded;
         order.UpdatedAt = DateTime.UtcNow;
+        await MailOutbox.EnqueueOrderRefundedAsync(db, order, license, ct);
         return null;
     }
 }

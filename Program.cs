@@ -4,6 +4,7 @@ using MasterServer.Customers;
 using MasterServer.Data;
 using MasterServer.Keys;
 using MasterServer.Licensing;
+using MasterServer.Mail;
 using MasterServer.Payments;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -62,10 +63,12 @@ LicenseApi.Map(app, skewSeconds);
 var sessionHours = builder.Configuration.GetValue("Admin:SessionHours", 12);
 AdminApi.Map(app, sessionHours);
 CatalogApi.Map(app, skewSeconds);
-KeysApi.Map(app);
+var mail = MailSenderFactory.FromEnvironment();
+KeysApi.Map(app, mail);
 CustomersApi.Map(app);
 var gateways = GatewayRegistry.FromEnvironment();
-PaymentsApi.Map(app, gateways);
+PaymentsApi.Map(app, gateways, mail);
+MailApi.Map(app, mail);
 
 try
 {

@@ -2,6 +2,7 @@ using System.Text.Json;
 using MasterServer.Admin;
 using MasterServer.Customers;
 using MasterServer.Data;
+using MasterServer.Mail;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -11,16 +12,16 @@ public static class PaymentsApi
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    public static void Map(WebApplication app, GatewayRegistry gateways)
+    public static void Map(WebApplication app, GatewayRegistry gateways, IMailSender mail)
     {
         app.MapPost("/v1/checkout", (HttpContext c, AppDb db, CancellationToken ct) => Create(c, db, gateways, ct));
         app.MapGet("/v1/checkout/{publicId}", (string publicId, HttpContext c, AppDb db, CancellationToken ct) => GetPublic(publicId, db, ct));
-        app.MapPost("/v1/webhooks/{gateway}", (string gateway, HttpContext c, AppDb db, CancellationToken ct) => Webhook(gateway, c, db, gateways, ct));
+        app.MapPost("/v1/webhooks/{gateway}", (string gateway, HttpContext c, AppDb db, CancellationToken ct) => Webhook(gateway, c, db, gateways, mail, ct));
 
         app.MapGet("/admin/orders", (HttpContext c, AppDb db, CancellationToken ct) => List(c, db, ct));
         app.MapGet("/admin/orders/{id:int}", (int id, HttpContext c, AppDb db, CancellationToken ct) => Get(id, c, db, ct));
-        app.MapPost("/admin/orders/mark-paid", (HttpContext c, AppDb db, CancellationToken ct) => MarkPaid(c, db, ct));
-        app.MapPost("/admin/orders/refund", (HttpContext c, AppDb db, CancellationToken ct) => Refund(c, db, ct));
+        app.MapPost("/admin/orders/mark-paid", (HttpContext c, AppDb db, CancellationToken ct) => MarkPaid(c, db, mail, ct));
+        app.MapPost("/admin/orders/refund", (HttpContext c, AppDb db, CancellationToken ct) => Refund(c, db, mail, ct));
 
         app.MapGet("/admin/gateway-plans", (HttpContext c, AppDb db, CancellationToken ct) => ListMaps(c, db, ct));
         app.MapPost("/admin/gateway-plans", (HttpContext c, AppDb db, CancellationToken ct) => CreateMap(c, db, ct));
@@ -124,7 +125,7 @@ public static class PaymentsApi
         return Json(200, PublicView(order, includeKey: order.Status == OrderStatuses.Paid));
     }
 
-    private static async Task<IResult> Webhook(string gatewayName, HttpContext ctx, AppDb db, GatewayRegistry gateways, CancellationToken ct)
+    private static async Task<IResult> Webhook(string gatewayName, HttpContext ctx, AppDb db, GatewayRegistry gateways, IMailSender mail, CancellationToken ct)
     {
         var gateway = gateways.Resolve(gatewayName);
         if (gateway is null) return Fail(404, "unknown gateway");
@@ -167,6 +168,7 @@ public static class PaymentsApi
         Audit.Record(db, ctx, null, "order.webhook", $"order#{order.Id}", $"gateway={gateway.Name},status={order.Status}");
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
+        await MailDispatch.DrainAsync(db, mail, 20, ct);
         return Json(200, new { received = true, duplicate = false, status = order.Status });
     }
 
@@ -203,7 +205,7 @@ public static class PaymentsApi
         return Json(200, new { order = AdminDetail(order) });
     }
 
-    private static async Task<IResult> MarkPaid(HttpContext ctx, AppDb db, CancellationToken ct)
+    private static async Task<IResult> MarkPaid(HttpContext ctx, AppDb db, IMailSender mail, CancellationToken ct)
     {
         var g = await Require(ctx, db, Permissions.PaymentWrite, ct);
         if (g.Result is not null) return g.Result;
@@ -230,11 +232,12 @@ public static class PaymentsApi
 
         Audit.Record(db, ctx, g.Principal, "order.mark-paid", $"order#{order.Id}", MaskKey(order.License?.Key));
         await db.SaveChangesAsync(ct);
+        await MailDispatch.DrainAsync(db, mail, 20, ct);
         await db.Entry(order).Reference(o => o.License).LoadAsync(ct);
         return Json(200, new { order = AdminDetail(order) });
     }
 
-    private static async Task<IResult> Refund(HttpContext ctx, AppDb db, CancellationToken ct)
+    private static async Task<IResult> Refund(HttpContext ctx, AppDb db, IMailSender mail, CancellationToken ct)
     {
         var g = await Require(ctx, db, Permissions.PaymentWrite, ct);
         if (g.Result is not null) return g.Result;
@@ -249,6 +252,7 @@ public static class PaymentsApi
 
         Audit.Record(db, ctx, g.Principal, "order.refund", $"order#{order.Id}");
         await db.SaveChangesAsync(ct);
+        await MailDispatch.DrainAsync(db, mail, 20, ct);
         return Json(200, new { order = AdminSummary(order) });
     }
 

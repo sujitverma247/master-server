@@ -29,6 +29,10 @@ public static class Permissions
     public const string PaymentRead = "payment.read";
     public const string PaymentWrite = "payment.write";
 
+    // Mail (Phase 6)
+    public const string MailRead = "mail.read";
+    public const string MailWrite = "mail.write";
+
     public static readonly IReadOnlyDictionary<string, string> Catalog = new Dictionary<string, string>
     {
         [UserManage] = "Create, update, and deactivate panel users.",
@@ -42,7 +46,9 @@ public static class Permissions
         [CustomerRead] = "View customer profiles.",
         [CustomerWrite] = "Edit customer profiles.",
         [PaymentRead] = "View payments and order outcomes.",
-        [PaymentWrite] = "Mark orders paid, refund, and map gateway plans."
+        [PaymentWrite] = "Mark orders paid, refund, and map gateway plans.",
+        [MailRead] = "View outbound mail.",
+        [MailWrite] = "Resend or flush outbound mail."
     };
 
     public const string RoleAdmin = "admin";
@@ -52,6 +58,6 @@ public static class Permissions
     public static readonly IReadOnlyDictionary<string, string[]> DefaultRoleGrants = new Dictionary<string, string[]>
     {
         [RoleAdmin] = Catalog.Keys.ToArray(),
-        [RoleAgent] = new[] { AuditRead, ProductRead, KeyRead, CustomerRead, PaymentRead }
+        [RoleAgent] = new[] { AuditRead, ProductRead, KeyRead, CustomerRead, PaymentRead, MailRead }
     };
 }

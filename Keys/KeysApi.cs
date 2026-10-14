@@ -3,6 +3,7 @@ using System.Text.Json;
 using MasterServer.Admin;
 using MasterServer.Customers;
 using MasterServer.Data;
+using MasterServer.Mail;
 using Microsoft.EntityFrameworkCore;
 
 namespace MasterServer.Keys;
@@ -12,10 +13,10 @@ public static class KeysApi
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private const int MaxBatch = 5000;
 
-    public static void Map(WebApplication app)
+    public static void Map(WebApplication app, IMailSender mail)
     {
         app.MapPost("/admin/keys/generate", (HttpContext c, AppDb db, CancellationToken ct) => Generate(c, db, ct));
-        app.MapPost("/panel/keys/issue", (HttpContext c, AppDb db, CancellationToken ct) => Issue(c, db, ct));
+        app.MapPost("/panel/keys/issue", (HttpContext c, AppDb db, CancellationToken ct) => Issue(c, db, mail, ct));
         app.MapGet("/admin/keys", (HttpContext c, AppDb db, CancellationToken ct) => List(c, db, ct));
         app.MapGet("/admin/keys/export", (HttpContext c, AppDb db, CancellationToken ct) => Export(c, db, ct));
         app.MapGet("/admin/keys/{id:int}", (int id, HttpContext c, AppDb db, CancellationToken ct) => Get(id, c, db, ct));
@@ -88,7 +89,7 @@ public static class KeysApi
 
     // ---------- Issue a single key ----------
 
-    private static async Task<IResult> Issue(HttpContext ctx, AppDb db, CancellationToken ct)
+    private static async Task<IResult> Issue(HttpContext ctx, AppDb db, IMailSender mail, CancellationToken ct)
     {
         var g = await Require(ctx, db, Permissions.KeyIssue, ct);
         if (g.Result is not null) return g.Result;
@@ -148,7 +149,10 @@ public static class KeysApi
         await db.SaveChangesAsync(ct);
 
         Audit.Record(db, ctx, g.Principal, "key.issue", $"license#{license.Id}", $"product={product.Slug},plan={planType},keyEnds={Mask(key)}");
+        if (customer is not null)
+            await MailOutbox.EnqueueLicenseIssuedAsync(db, license, null, ct);
         await db.SaveChangesAsync(ct);
+        await MailDispatch.DrainAsync(db, mail, 20, ct);
 
         return Json(201, new { license = Detail(license, product, null) });
     }

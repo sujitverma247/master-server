@@ -124,6 +124,7 @@ public class AppDb : DbContext
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<PaymentEvent> PaymentEvents => Set<PaymentEvent>();
     public DbSet<GatewayPlan> GatewayPlans => Set<GatewayPlan>();
+    public DbSet<OutboundMail> MailOutbox => Set<OutboundMail>();
     public DbSet<License> Licenses => Set<License>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<UsedNonce> UsedNonces => Set<UsedNonce>();
@@ -299,6 +300,26 @@ public class AppDb : DbContext
             entity.Property(m => m.PlanCode).HasMaxLength(32);
             entity.Property(m => m.ExternalPlanId).HasMaxLength(128);
             entity.HasIndex(m => new { m.Gateway, m.ProductId, m.PlanCode }).IsUnique();
+        });
+
+        modelBuilder.Entity<OutboundMail>(entity =>
+        {
+            entity.ToTable("MailOutbox");
+            entity.Property(m => m.Template).HasMaxLength(64);
+            entity.Property(m => m.IdempotencyKey).HasMaxLength(128);
+            entity.Property(m => m.ToEmail).HasMaxLength(256);
+            entity.Property(m => m.ToName).HasMaxLength(200);
+            entity.Property(m => m.FromEmail).HasMaxLength(256);
+            entity.Property(m => m.FromName).HasMaxLength(200);
+            entity.Property(m => m.Subject).HasMaxLength(300);
+            entity.Property(m => m.Status).HasMaxLength(16);
+            entity.Property(m => m.Provider).HasMaxLength(32);
+            entity.Property(m => m.ProviderMessageId).HasMaxLength(128);
+            entity.Property(m => m.LastError).HasMaxLength(512);
+            entity.HasIndex(m => m.IdempotencyKey).IsUnique();
+            entity.HasIndex(m => m.Status);
+            entity.HasIndex(m => m.ToEmail);
+            entity.HasIndex(m => m.OrderId);
         });
 
         modelBuilder.Entity<Activation>(entity =>
