@@ -46,12 +46,28 @@ public class Plan
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
+/// <summary>A generated batch of keys. Lets admins revoke or export a whole production run.</summary>
+public class KeyBatch
+{
+    public int Id { get; set; }
+    public string Name { get; set; } = "";
+    public int ProductId { get; set; }
+    public string PlanType { get; set; } = "1year";
+    public int Quantity { get; set; }
+    public int MaxMachines { get; set; } = 3;
+    public string Notes { get; set; } = "";
+    public string GeneratedBy { get; set; } = "";
+    public DateTime GeneratedAt { get; set; } = DateTime.UtcNow;
+}
+
 public class License
 {
     public int Id { get; set; }
     public string Key { get; set; } = "";
     public int ProductId { get; set; }
     public Product Product { get; set; } = null!;
+    public int? BatchId { get; set; }
+    public KeyBatch? Batch { get; set; }
     public string PlanType { get; set; } = "1year";
     public int MaxMachines { get; set; } = 3;
     public DateTime CreatedAt { get; set; }
@@ -59,6 +75,16 @@ public class License
     public DateTime? ExpiresAt { get; set; }
     public bool IsActive { get; set; } = true;
     public bool IsRevoked { get; set; }
+    public string Notes { get; set; } = "";
+
+    // Gateway-agnostic origin. "" = manually generated / retail. Otherwise the gateway ("freemius", ...).
+    public string Source { get; set; } = "";
+    public bool IsSubscription { get; set; }
+    public string? ExternalSubscriptionId { get; set; }
+    public string? ExternalPaymentId { get; set; }
+    public string? ExternalCustomerId { get; set; }
+    public string CustomerEmail { get; set; } = "";
+
     public ICollection<Activation> Activations { get; set; } = new List<Activation>();
 }
 
@@ -89,6 +115,7 @@ public class AppDb : DbContext
     public DbSet<Brand> Brands => Set<Brand>();
     public DbSet<Product> Products => Set<Product>();
     public DbSet<Plan> Plans => Set<Plan>();
+    public DbSet<KeyBatch> KeyBatches => Set<KeyBatch>();
     public DbSet<License> Licenses => Set<License>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<UsedNonce> UsedNonces => Set<UsedNonce>();
@@ -139,17 +166,40 @@ public class AppDb : DbContext
             entity.HasIndex(p => p.Code).IsUnique();
         });
 
+        modelBuilder.Entity<KeyBatch>(entity =>
+        {
+            entity.ToTable("KeyBatches");
+            entity.Property(b => b.Name).HasMaxLength(200);
+            entity.Property(b => b.PlanType).HasMaxLength(32);
+            entity.Property(b => b.Notes).HasMaxLength(1024);
+            entity.Property(b => b.GeneratedBy).HasMaxLength(128);
+            entity.HasIndex(b => b.ProductId);
+        });
+
         modelBuilder.Entity<License>(entity =>
         {
             entity.ToTable("Licenses");
             entity.Property(l => l.Key).HasMaxLength(128);
             entity.Property(l => l.PlanType).HasMaxLength(32);
+            entity.Property(l => l.Notes).HasMaxLength(1024);
+            entity.Property(l => l.Source).HasMaxLength(32);
+            entity.Property(l => l.ExternalSubscriptionId).HasMaxLength(128);
+            entity.Property(l => l.ExternalPaymentId).HasMaxLength(128);
+            entity.Property(l => l.ExternalCustomerId).HasMaxLength(128);
+            entity.Property(l => l.CustomerEmail).HasMaxLength(256);
             entity.HasIndex(l => l.Key).IsUnique();
             entity.HasIndex(l => new { l.Key, l.ProductId });
+            entity.HasIndex(l => l.CustomerEmail);
+            entity.HasIndex(l => l.ExternalSubscriptionId);
+            entity.HasIndex(l => l.BatchId);
             entity.HasOne(l => l.Product)
                 .WithMany()
                 .HasForeignKey(l => l.ProductId)
                 .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(l => l.Batch)
+                .WithMany()
+                .HasForeignKey(l => l.BatchId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         modelBuilder.Entity<Activation>(entity =>

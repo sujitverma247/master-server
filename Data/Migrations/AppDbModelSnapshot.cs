@@ -238,6 +238,53 @@ namespace MasterServer.Data.Migrations
                     b.ToTable("Brands", (string)null);
                 });
 
+            modelBuilder.Entity("MasterServer.Data.KeyBatch", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("GeneratedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("GeneratedBy")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<int>("MaxMachines")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Notes")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<string>("PlanType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<int>("ProductId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProductId");
+
+                    b.ToTable("KeyBatches", (string)null);
+                });
+
             modelBuilder.Entity("MasterServer.Data.License", b =>
                 {
                     b.Property<int>("Id")
@@ -249,16 +296,39 @@ namespace MasterServer.Data.Migrations
                     b.Property<DateTime?>("ActivatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<int?>("BatchId")
+                        .HasColumnType("integer");
+
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("CustomerEmail")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
                     b.Property<DateTime?>("ExpiresAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExternalCustomerId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("ExternalPaymentId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("ExternalSubscriptionId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
 
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
 
                     b.Property<bool>("IsRevoked")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsSubscription")
                         .HasColumnType("boolean");
 
                     b.Property<string>("Key")
@@ -269,6 +339,11 @@ namespace MasterServer.Data.Migrations
                     b.Property<int>("MaxMachines")
                         .HasColumnType("integer");
 
+                    b.Property<string>("Notes")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
                     b.Property<string>("PlanType")
                         .IsRequired()
                         .HasMaxLength(32)
@@ -277,7 +352,18 @@ namespace MasterServer.Data.Migrations
                     b.Property<int>("ProductId")
                         .HasColumnType("integer");
 
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("BatchId");
+
+                    b.HasIndex("CustomerEmail");
+
+                    b.HasIndex("ExternalSubscriptionId");
 
                     b.HasIndex("Key")
                         .IsUnique();
@@ -509,11 +595,18 @@ namespace MasterServer.Data.Migrations
 
             modelBuilder.Entity("MasterServer.Data.License", b =>
                 {
+                    b.HasOne("MasterServer.Data.KeyBatch", "Batch")
+                        .WithMany()
+                        .HasForeignKey("BatchId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("MasterServer.Data.Product", "Product")
                         .WithMany()
                         .HasForeignKey("ProductId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.Navigation("Batch");
 
                     b.Navigation("Product");
                 });
