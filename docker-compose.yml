@@ -1,0 +1,42 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: master-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: master
+    volumes:
+      - master-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d master"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    container_name: master-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${PORT:-8080}:8080"
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      PORT: "8080"
+      DATABASE_URL: Host=db;Port=5432;Database=master;Username=postgres;Password=${POSTGRES_PASSWORD:-postgres}
+      PRODUCT_SLUG: ${PRODUCT_SLUG:-}
+      PRODUCT_DISPLAY_NAME: ${PRODUCT_DISPLAY_NAME:-}
+      PRODUCT_APP_KEY: ${PRODUCT_APP_KEY:-}
+      PRODUCT_KEY_PREFIX: ${PRODUCT_KEY_PREFIX:-}
+      PRODUCT_USER_AGENT_PREFIX: ${PRODUCT_USER_AGENT_PREFIX:-}
+      PRODUCT_HMAC_SECRET: ${PRODUCT_HMAC_SECRET:-}
+      SEED_LICENSE_KEY: ${SEED_LICENSE_KEY:-}
+      SEED_PLAN_TYPE: ${SEED_PLAN_TYPE:-1year}
+      SEED_MAX_MACHINES: ${SEED_MAX_MACHINES:-3}
+
+volumes:
+  master-data:
