@@ -142,6 +142,8 @@ public class AppDb : DbContext
     public DbSet<License> Licenses => Set<License>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<Heartbeat> Heartbeats => Set<Heartbeat>();
+    public DbSet<Ticket> Tickets => Set<Ticket>();
+    public DbSet<TicketMessage> TicketMessages => Set<TicketMessage>();
     public DbSet<UsedNonce> UsedNonces => Set<UsedNonce>();
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
     public DbSet<AdminSession> AdminSessions => Set<AdminSession>();
@@ -362,6 +364,43 @@ public class AppDb : DbContext
             entity.HasIndex(h => h.MachineId);
             entity.HasIndex(h => h.LicenseId);
             entity.HasIndex(h => h.SeenAt);
+        });
+
+        modelBuilder.Entity<Ticket>(entity =>
+        {
+            entity.ToTable("Tickets");
+            entity.Property(t => t.PublicId).HasMaxLength(64);
+            entity.Property(t => t.Subject).HasMaxLength(200);
+            entity.Property(t => t.Status).HasMaxLength(16);
+            entity.Property(t => t.Priority).HasMaxLength(16);
+            entity.HasIndex(t => t.PublicId).IsUnique();
+            entity.HasIndex(t => t.CustomerId);
+            entity.HasIndex(t => t.Status);
+            entity.HasOne(t => t.Customer)
+                .WithMany()
+                .HasForeignKey(t => t.CustomerId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Product>()
+                .WithMany()
+                .HasForeignKey(t => t.ProductId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne<License>()
+                .WithMany()
+                .HasForeignKey(t => t.LicenseId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<TicketMessage>(entity =>
+        {
+            entity.ToTable("TicketMessages");
+            entity.Property(m => m.Author).HasMaxLength(16);
+            entity.Property(m => m.AuthorName).HasMaxLength(200);
+            entity.Property(m => m.Body).HasMaxLength(8000);
+            entity.HasIndex(m => m.TicketId);
+            entity.HasOne(m => m.Ticket)
+                .WithMany(t => t.Messages)
+                .HasForeignKey(m => m.TicketId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         modelBuilder.Entity<UsedNonce>(entity =>

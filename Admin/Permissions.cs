@@ -36,6 +36,10 @@ public static class Permissions
     // Telemetry (Phase 7)
     public const string TelemetryRead = "telemetry.read";
 
+    // Support (Phase 8)
+    public const string SupportRead = "support.read";
+    public const string SupportWrite = "support.write";
+
     public static readonly IReadOnlyDictionary<string, string> Catalog = new Dictionary<string, string>
     {
         [UserManage] = "Create, update, and deactivate panel users.",
@@ -52,16 +56,18 @@ public static class Permissions
         [PaymentWrite] = "Mark orders paid, refund, and map gateway plans.",
         [MailRead] = "View outbound mail.",
         [MailWrite] = "Resend or flush outbound mail.",
-        [TelemetryRead] = "View machine last-seen and heartbeats."
+        [TelemetryRead] = "View machine last-seen and heartbeats.",
+        [SupportRead] = "View support tickets.",
+        [SupportWrite] = "Reply, close, and reopen support tickets."
     };
 
     public const string RoleAdmin = "admin";
     public const string RoleAgent = "agent";
 
-    /// <summary>Default role to permission grants. Admin gets everything; agent is read-only triage.</summary>
+    /// <summary>Default role to permission grants. Admin gets everything; agent is read-only except support.write.</summary>
     public static readonly IReadOnlyDictionary<string, string[]> DefaultRoleGrants = new Dictionary<string, string[]>
     {
         [RoleAdmin] = Catalog.Keys.ToArray(),
-        [RoleAgent] = new[] { AuditRead, ProductRead, KeyRead, CustomerRead, PaymentRead, MailRead, TelemetryRead }
+        [RoleAgent] = new[] { AuditRead, ProductRead, KeyRead, CustomerRead, PaymentRead, MailRead, TelemetryRead, SupportRead, SupportWrite }
     };
 }
