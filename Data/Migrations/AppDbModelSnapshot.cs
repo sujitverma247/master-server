@@ -238,6 +238,57 @@ namespace MasterServer.Data.Migrations
                     b.ToTable("Brands", (string)null);
                 });
 
+            modelBuilder.Entity("MasterServer.Data.Customer", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ExternalCustomerId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Notes")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Email")
+                        .IsUnique();
+
+                    b.HasIndex("ExternalCustomerId");
+
+                    b.ToTable("Customers", (string)null);
+                });
+
             modelBuilder.Entity("MasterServer.Data.KeyBatch", b =>
                 {
                     b.Property<int>("Id")
@@ -307,6 +358,9 @@ namespace MasterServer.Data.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
 
+                    b.Property<int?>("CustomerId")
+                        .HasColumnType("integer");
+
                     b.Property<DateTime?>("ExpiresAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -362,6 +416,8 @@ namespace MasterServer.Data.Migrations
                     b.HasIndex("BatchId");
 
                     b.HasIndex("CustomerEmail");
+
+                    b.HasIndex("CustomerId");
 
                     b.HasIndex("ExternalSubscriptionId");
 
@@ -519,6 +575,89 @@ namespace MasterServer.Data.Migrations
                     b.ToTable("Products", (string)null);
                 });
 
+            modelBuilder.Entity("MasterServer.Data.RefundPolicy", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("EffectiveAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsCurrent")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("Version")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IsCurrent");
+
+                    b.HasIndex("Version")
+                        .IsUnique();
+
+                    b.ToTable("RefundPolicies", (string)null);
+                });
+
+            modelBuilder.Entity("MasterServer.Data.RefundPolicyAcceptance", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("AcceptedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("CustomerId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("IpAddress")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("PolicyId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("UserAgent")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PolicyId");
+
+                    b.HasIndex("CustomerId", "PolicyId")
+                        .IsUnique();
+
+                    b.ToTable("RefundPolicyAcceptances", (string)null);
+                });
+
             modelBuilder.Entity("MasterServer.Data.RolePermission", b =>
                 {
                     b.Property<int>("Id")
@@ -600,6 +739,11 @@ namespace MasterServer.Data.Migrations
                         .HasForeignKey("BatchId")
                         .OnDelete(DeleteBehavior.SetNull);
 
+                    b.HasOne("MasterServer.Data.Customer", "Customer")
+                        .WithMany("Licenses")
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("MasterServer.Data.Product", "Product")
                         .WithMany()
                         .HasForeignKey("ProductId")
@@ -607,6 +751,8 @@ namespace MasterServer.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Batch");
+
+                    b.Navigation("Customer");
 
                     b.Navigation("Product");
                 });
@@ -619,6 +765,32 @@ namespace MasterServer.Data.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("Brand");
+                });
+
+            modelBuilder.Entity("MasterServer.Data.RefundPolicyAcceptance", b =>
+                {
+                    b.HasOne("MasterServer.Data.Customer", "Customer")
+                        .WithMany("Acceptances")
+                        .HasForeignKey("CustomerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MasterServer.Data.RefundPolicy", "Policy")
+                        .WithMany()
+                        .HasForeignKey("PolicyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Customer");
+
+                    b.Navigation("Policy");
+                });
+
+            modelBuilder.Entity("MasterServer.Data.Customer", b =>
+                {
+                    b.Navigation("Acceptances");
+
+                    b.Navigation("Licenses");
                 });
 
             modelBuilder.Entity("MasterServer.Data.License", b =>

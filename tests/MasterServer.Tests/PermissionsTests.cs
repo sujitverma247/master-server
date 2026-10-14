@@ -20,7 +20,9 @@ public class PermissionsTests
         Assert.DoesNotContain(Permissions.UserManage, agentGrants);
         Assert.DoesNotContain(Permissions.KeyIssue, agentGrants);
         Assert.DoesNotContain(Permissions.KeyRevoke, agentGrants);
+        Assert.DoesNotContain(Permissions.CustomerWrite, agentGrants);
         Assert.Contains(Permissions.KeyRead, agentGrants);
+        Assert.Contains(Permissions.CustomerRead, agentGrants);
     }
 
     [Fact]

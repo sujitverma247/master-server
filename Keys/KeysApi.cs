@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using MasterServer.Admin;
+using MasterServer.Customers;
 using MasterServer.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -117,6 +118,17 @@ public static class KeysApi
             key = (await GenerateUniqueKeys(db, product.KeyPrefix, 1, ct))[0];
         }
 
+        var rawEmail = Str(body.Value, "customerEmail");
+        Customer? customer = null;
+        var customerEmail = "";
+        if (rawEmail.Length > 0)
+        {
+            if (!EmailAddress.TryNormalize(rawEmail, out var email))
+                return Fail(400, "invalid customerEmail");
+            customer = await CustomerStore.FindOrCreateAsync(db, email, "", "key-issue", ct);
+            customerEmail = email;
+        }
+
         var license = new License
         {
             Key = key,
@@ -127,7 +139,8 @@ public static class KeysApi
             ExpiresAt = null,
             IsActive = true,
             IsRevoked = false,
-            CustomerEmail = Str(body.Value, "customerEmail"),
+            Customer = customer,
+            CustomerEmail = customerEmail,
             Notes = Str(body.Value, "notes"),
             Source = Str(body.Value, "source")
         };
@@ -234,7 +247,24 @@ public static class KeysApi
         if (Str(body.Value, "planType") is { Length: > 0 } pt) { license.PlanType = pt; changes.Add("planType"); }
         if (TryInt(body.Value, "maxMachines", out var mm)) { license.MaxMachines = Math.Clamp(mm, 1, 100); changes.Add("maxMachines"); }
         if (body.Value.TryGetProperty("notes", out _)) { license.Notes = Str(body.Value, "notes"); changes.Add("notes"); }
-        if (body.Value.TryGetProperty("customerEmail", out _)) { license.CustomerEmail = Str(body.Value, "customerEmail"); changes.Add("customerEmail"); }
+        if (body.Value.TryGetProperty("customerEmail", out _))
+        {
+            var rawEmail = Str(body.Value, "customerEmail");
+            if (rawEmail.Length == 0)
+            {
+                license.CustomerEmail = "";
+                license.CustomerId = null;
+            }
+            else
+            {
+                if (!EmailAddress.TryNormalize(rawEmail, out var email))
+                    return Fail(400, "invalid customerEmail");
+                var customer = await CustomerStore.FindOrCreateAsync(db, email, "", "key-update", ct);
+                license.Customer = customer;
+                license.CustomerEmail = email;
+            }
+            changes.Add("customerEmail");
+        }
         if (TryBool(body.Value, "isActive", out var active)) { license.IsActive = active; changes.Add($"isActive={active}"); }
         if (TryBool(body.Value, "isRevoked", out var revoked)) { license.IsRevoked = revoked; changes.Add($"isRevoked={revoked}"); }
 
@@ -346,7 +376,7 @@ public static class KeysApi
 
     private static object Summary(License l) => new
     {
-        l.Id, l.Key, l.ProductId, l.BatchId, l.PlanType, l.MaxMachines,
+        l.Id, l.Key, l.ProductId, l.BatchId, l.CustomerId, l.PlanType, l.MaxMachines,
         l.IsActive, l.IsRevoked, l.Source, l.CustomerEmail,
         activatedAt = l.ActivatedAt?.ToString("o"),
         expiresAt = l.ExpiresAt?.ToString("o"),
@@ -357,7 +387,7 @@ public static class KeysApi
     {
         l.Id, l.Key, l.ProductId, productSlug = product?.Slug, l.BatchId, l.PlanType, l.MaxMachines,
         l.IsActive, l.IsRevoked, l.Notes, l.Source, l.IsSubscription,
-        l.ExternalSubscriptionId, l.ExternalPaymentId, l.ExternalCustomerId, l.CustomerEmail,
+        l.ExternalSubscriptionId, l.ExternalPaymentId, l.ExternalCustomerId, l.CustomerId, l.CustomerEmail,
         activatedAt = l.ActivatedAt?.ToString("o"),
         expiresAt = l.ExpiresAt?.ToString("o"),
         createdAt = l.CreatedAt.ToString("o"),

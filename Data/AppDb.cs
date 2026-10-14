@@ -84,6 +84,8 @@ public class License
     public string? ExternalPaymentId { get; set; }
     public string? ExternalCustomerId { get; set; }
     public string CustomerEmail { get; set; } = "";
+    public int? CustomerId { get; set; }
+    public Customer? Customer { get; set; }
 
     public ICollection<Activation> Activations { get; set; } = new List<Activation>();
 }
@@ -116,6 +118,9 @@ public class AppDb : DbContext
     public DbSet<Product> Products => Set<Product>();
     public DbSet<Plan> Plans => Set<Plan>();
     public DbSet<KeyBatch> KeyBatches => Set<KeyBatch>();
+    public DbSet<Customer> Customers => Set<Customer>();
+    public DbSet<RefundPolicy> RefundPolicies => Set<RefundPolicy>();
+    public DbSet<RefundPolicyAcceptance> RefundPolicyAcceptances => Set<RefundPolicyAcceptance>();
     public DbSet<License> Licenses => Set<License>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<UsedNonce> UsedNonces => Set<UsedNonce>();
@@ -192,6 +197,7 @@ public class AppDb : DbContext
             entity.HasIndex(l => l.CustomerEmail);
             entity.HasIndex(l => l.ExternalSubscriptionId);
             entity.HasIndex(l => l.BatchId);
+            entity.HasIndex(l => l.CustomerId);
             entity.HasOne(l => l.Product)
                 .WithMany()
                 .HasForeignKey(l => l.ProductId)
@@ -200,6 +206,48 @@ public class AppDb : DbContext
                 .WithMany()
                 .HasForeignKey(l => l.BatchId)
                 .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(l => l.Customer)
+                .WithMany(c => c.Licenses)
+                .HasForeignKey(l => l.CustomerId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<Customer>(entity =>
+        {
+            entity.ToTable("Customers");
+            entity.Property(c => c.Email).HasMaxLength(256);
+            entity.Property(c => c.DisplayName).HasMaxLength(200);
+            entity.Property(c => c.Notes).HasMaxLength(1024);
+            entity.Property(c => c.Source).HasMaxLength(32);
+            entity.Property(c => c.ExternalCustomerId).HasMaxLength(128);
+            entity.HasIndex(c => c.Email).IsUnique();
+            entity.HasIndex(c => c.ExternalCustomerId);
+        });
+
+        modelBuilder.Entity<RefundPolicy>(entity =>
+        {
+            entity.ToTable("RefundPolicies");
+            entity.Property(p => p.Version).HasMaxLength(64);
+            entity.Property(p => p.Title).HasMaxLength(200);
+            entity.HasIndex(p => p.Version).IsUnique();
+            entity.HasIndex(p => p.IsCurrent);
+        });
+
+        modelBuilder.Entity<RefundPolicyAcceptance>(entity =>
+        {
+            entity.ToTable("RefundPolicyAcceptances");
+            entity.Property(a => a.IpAddress).HasMaxLength(64);
+            entity.Property(a => a.UserAgent).HasMaxLength(256);
+            entity.Property(a => a.Source).HasMaxLength(32);
+            entity.HasIndex(a => new { a.CustomerId, a.PolicyId }).IsUnique();
+            entity.HasOne(a => a.Customer)
+                .WithMany(c => c.Acceptances)
+                .HasForeignKey(a => a.CustomerId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(a => a.Policy)
+                .WithMany()
+                .HasForeignKey(a => a.PolicyId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<Activation>(entity =>

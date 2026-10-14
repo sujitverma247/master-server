@@ -1,5 +1,6 @@
 using MasterServer.Admin;
 using MasterServer.Catalog;
+using MasterServer.Customers;
 using MasterServer.Data;
 using MasterServer.Keys;
 using MasterServer.Licensing;
@@ -61,6 +62,7 @@ var sessionHours = builder.Configuration.GetValue("Admin:SessionHours", 12);
 AdminApi.Map(app, sessionHours);
 CatalogApi.Map(app, skewSeconds);
 KeysApi.Map(app);
+CustomersApi.Map(app);
 
 try
 {
@@ -78,6 +80,7 @@ using (var scope = app.Services.CreateScope())
     await db.Database.MigrateAsync();
     await ProductSeed.ApplyAsync(db, app.Configuration, app.Logger, CancellationToken.None);
     await AdminSeed.ApplyAsync(db, app.Configuration, app.Logger, CancellationToken.None);
+    await RefundPolicySeed.ApplyAsync(db, app.Logger, CancellationToken.None);
 }
 
 app.Run();
