@@ -121,6 +121,9 @@ public class AppDb : DbContext
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<RefundPolicy> RefundPolicies => Set<RefundPolicy>();
     public DbSet<RefundPolicyAcceptance> RefundPolicyAcceptances => Set<RefundPolicyAcceptance>();
+    public DbSet<Order> Orders => Set<Order>();
+    public DbSet<PaymentEvent> PaymentEvents => Set<PaymentEvent>();
+    public DbSet<GatewayPlan> GatewayPlans => Set<GatewayPlan>();
     public DbSet<License> Licenses => Set<License>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<UsedNonce> UsedNonces => Set<UsedNonce>();
@@ -248,6 +251,54 @@ public class AppDb : DbContext
                 .WithMany()
                 .HasForeignKey(a => a.PolicyId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<Order>(entity =>
+        {
+            entity.ToTable("Orders");
+            entity.Property(o => o.PublicId).HasMaxLength(64);
+            entity.Property(o => o.IdempotencyKey).HasMaxLength(128);
+            entity.Property(o => o.PlanType).HasMaxLength(32);
+            entity.Property(o => o.Currency).HasMaxLength(8);
+            entity.Property(o => o.Gateway).HasMaxLength(32);
+            entity.Property(o => o.Status).HasMaxLength(16);
+            entity.Property(o => o.Amount).HasColumnType("numeric(12,2)");
+            entity.Property(o => o.ExternalCheckoutId).HasMaxLength(128);
+            entity.Property(o => o.ExternalPaymentId).HasMaxLength(128);
+            entity.Property(o => o.ExternalSubscriptionId).HasMaxLength(128);
+            entity.Property(o => o.CheckoutUrl).HasMaxLength(512);
+            entity.HasIndex(o => o.PublicId).IsUnique();
+            entity.HasIndex(o => o.IdempotencyKey).IsUnique();
+            entity.HasIndex(o => o.CustomerId);
+            entity.HasIndex(o => o.Status);
+            entity.HasOne(o => o.Customer)
+                .WithMany()
+                .HasForeignKey(o => o.CustomerId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(o => o.License)
+                .WithMany()
+                .HasForeignKey(o => o.LicenseId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<PaymentEvent>(entity =>
+        {
+            entity.ToTable("PaymentEvents");
+            entity.Property(e => e.Gateway).HasMaxLength(32);
+            entity.Property(e => e.ExternalEventId).HasMaxLength(128);
+            entity.Property(e => e.EventType).HasMaxLength(64);
+            entity.Property(e => e.PayloadSha256).HasMaxLength(64);
+            entity.HasIndex(e => new { e.Gateway, e.ExternalEventId }).IsUnique();
+            entity.HasIndex(e => e.OrderId);
+        });
+
+        modelBuilder.Entity<GatewayPlan>(entity =>
+        {
+            entity.ToTable("GatewayPlans");
+            entity.Property(m => m.Gateway).HasMaxLength(32);
+            entity.Property(m => m.PlanCode).HasMaxLength(32);
+            entity.Property(m => m.ExternalPlanId).HasMaxLength(128);
+            entity.HasIndex(m => new { m.Gateway, m.ProductId, m.PlanCode }).IsUnique();
         });
 
         modelBuilder.Entity<Activation>(entity =>

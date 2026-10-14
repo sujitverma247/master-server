@@ -27,6 +27,7 @@ public static class Permissions
 
     // Payments (Phase 5)
     public const string PaymentRead = "payment.read";
+    public const string PaymentWrite = "payment.write";
 
     public static readonly IReadOnlyDictionary<string, string> Catalog = new Dictionary<string, string>
     {
@@ -40,7 +41,8 @@ public static class Permissions
         [KeyRevoke] = "Revoke, update, or delete license keys.",
         [CustomerRead] = "View customer profiles.",
         [CustomerWrite] = "Edit customer profiles.",
-        [PaymentRead] = "View payments and order outcomes."
+        [PaymentRead] = "View payments and order outcomes.",
+        [PaymentWrite] = "Mark orders paid, refund, and map gateway plans."
     };
 
     public const string RoleAdmin = "admin";

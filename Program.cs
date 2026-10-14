@@ -4,6 +4,7 @@ using MasterServer.Customers;
 using MasterServer.Data;
 using MasterServer.Keys;
 using MasterServer.Licensing;
+using MasterServer.Payments;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 
@@ -63,6 +64,8 @@ AdminApi.Map(app, sessionHours);
 CatalogApi.Map(app, skewSeconds);
 KeysApi.Map(app);
 CustomersApi.Map(app);
+var gateways = GatewayRegistry.FromEnvironment();
+PaymentsApi.Map(app, gateways);
 
 try
 {
