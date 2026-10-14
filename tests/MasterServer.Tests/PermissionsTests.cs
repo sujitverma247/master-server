@@ -27,6 +27,7 @@ public class PermissionsTests
         Assert.Contains(Permissions.CustomerRead, agentGrants);
         Assert.Contains(Permissions.PaymentRead, agentGrants);
         Assert.Contains(Permissions.MailRead, agentGrants);
+        Assert.Contains(Permissions.TelemetryRead, agentGrants);
     }
 
     [Fact]

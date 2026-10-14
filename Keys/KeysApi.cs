@@ -399,6 +399,7 @@ public static class KeysApi
         {
             a.Id, a.MachineId, a.IpAddress, a.AppVersion, a.OsVersion,
             activatedAt = a.ActivatedAt.ToString("o"),
+            lastSeenAt = (a.LastSeenAt ?? a.ActivatedAt).ToString("o"),
             deactivatedAt = a.DeactivatedAt?.ToString("o")
         })
     };

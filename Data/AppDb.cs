@@ -101,6 +101,20 @@ public class Activation
     public string OsVersion { get; set; } = "";
     public DateTime ActivatedAt { get; set; }
     public DateTime? DeactivatedAt { get; set; }
+    public DateTime? LastSeenAt { get; set; }
+}
+
+/// <summary>A periodic check-in from an activated machine. Pruned after a retention window.</summary>
+public class Heartbeat
+{
+    public long Id { get; set; }
+    public int LicenseId { get; set; }
+    public int ActivationId { get; set; }
+    public string MachineId { get; set; } = "";
+    public string AppVersion { get; set; } = "";
+    public string OsVersion { get; set; } = "";
+    public string IpAddress { get; set; } = "";
+    public DateTime SeenAt { get; set; } = DateTime.UtcNow;
 }
 
 public class UsedNonce
@@ -127,6 +141,7 @@ public class AppDb : DbContext
     public DbSet<OutboundMail> MailOutbox => Set<OutboundMail>();
     public DbSet<License> Licenses => Set<License>();
     public DbSet<Activation> Activations => Set<Activation>();
+    public DbSet<Heartbeat> Heartbeats => Set<Heartbeat>();
     public DbSet<UsedNonce> UsedNonces => Set<UsedNonce>();
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
     public DbSet<AdminSession> AdminSessions => Set<AdminSession>();
@@ -330,10 +345,23 @@ public class AppDb : DbContext
             entity.Property(a => a.AppVersion).HasMaxLength(64);
             entity.Property(a => a.OsVersion).HasMaxLength(128);
             entity.HasIndex(a => new { a.LicenseId, a.MachineId });
+            entity.HasIndex(a => a.LastSeenAt);
             entity.HasOne(a => a.License)
                 .WithMany(l => l.Activations)
                 .HasForeignKey(a => a.LicenseId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Heartbeat>(entity =>
+        {
+            entity.ToTable("Heartbeats");
+            entity.Property(h => h.MachineId).HasMaxLength(128);
+            entity.Property(h => h.AppVersion).HasMaxLength(64);
+            entity.Property(h => h.OsVersion).HasMaxLength(128);
+            entity.Property(h => h.IpAddress).HasMaxLength(64);
+            entity.HasIndex(h => h.MachineId);
+            entity.HasIndex(h => h.LicenseId);
+            entity.HasIndex(h => h.SeenAt);
         });
 
         modelBuilder.Entity<UsedNonce>(entity =>

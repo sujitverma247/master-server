@@ -17,6 +17,8 @@ public static class LicenseApi
             Status(ctx, db, skewSeconds, ct));
         app.MapPost("/v1/license/deactivate", (HttpContext ctx, AppDb db, CancellationToken ct) =>
             Deactivate(ctx, db, skewSeconds, ct));
+        app.MapPost("/v1/license/heartbeat", (HttpContext ctx, AppDb db, CancellationToken ct) =>
+            Heartbeat(ctx, db, skewSeconds, ct));
     }
 
     public static async Task<IResult> Activate(HttpContext ctx, AppDb db, int skewSeconds, CancellationToken ct)
@@ -76,8 +78,16 @@ public static class LicenseApi
                 IpAddress = ctx.Connection.RemoteIpAddress?.ToString() ?? "",
                 AppVersion = appVersion,
                 OsVersion = osVersion,
-                ActivatedAt = now
+                ActivatedAt = now,
+                LastSeenAt = now
             });
+        }
+        else
+        {
+            existing.LastSeenAt = now;
+            if (appVersion.Length > 0) existing.AppVersion = appVersion;
+            if (osVersion.Length > 0) existing.OsVersion = osVersion;
+            existing.IpAddress = ctx.Connection.RemoteIpAddress?.ToString() ?? existing.IpAddress;
         }
 
         await db.SaveChangesAsync(ct);
@@ -109,14 +119,35 @@ public static class LicenseApi
 
         var now = DateTime.UtcNow;
         var expired = license.ActivatedAt is not null && license.ExpiresAt is DateTime exp && exp < now;
+        var valid = !license.IsRevoked && license.IsActive && !expired;
+
+        var machineId = ctx.Request.Query["machineId"].ToString().Trim();
+        if (machineId.Length == 0)
+        {
+            return Json(StatusCodes.Status200OK, new
+            {
+                valid,
+                isActive = license.IsActive,
+                isRevoked = license.IsRevoked,
+                expired,
+                expiresAt = FormatExpiry(license.ExpiresAt),
+                planType = license.PlanType
+            });
+        }
+
+        var seat = await db.Activations.AsNoTracking()
+            .FirstOrDefaultAsync(a => a.LicenseId == license.Id && a.MachineId == machineId && a.DeactivatedAt == null, ct);
         return Json(StatusCodes.Status200OK, new
         {
-            valid = !license.IsRevoked && license.IsActive && !expired,
+            valid,
             isActive = license.IsActive,
             isRevoked = license.IsRevoked,
             expired,
             expiresAt = FormatExpiry(license.ExpiresAt),
-            planType = license.PlanType
+            planType = license.PlanType,
+            machineId,
+            machineSeated = seat is not null,
+            lastSeenAt = seat is null ? "" : FormatExpiry(seat.LastSeenAt ?? seat.ActivatedAt)
         });
     }
 
@@ -148,6 +179,74 @@ public static class LicenseApi
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
         return Json(StatusCodes.Status200OK, new { deactivated = true });
+    }
+
+    public static async Task<IResult> Heartbeat(HttpContext ctx, AppDb db, int skewSeconds, CancellationToken ct)
+    {
+        var auth = await HmacRequest.AuthenticateAsync(ctx, db, skewSeconds, ct);
+        if (auth is not HmacResult.Ok ok)
+            return Rejected();
+
+        var body = await ReadBodyAsync(ctx, ct);
+        if (body is null)
+            return Fail(StatusCodes.Status400BadRequest, "invalid JSON body");
+
+        var key = Str(body.Value, "key");
+        var machineId = Str(body.Value, "machineId");
+        var appVersion = Str(body.Value, "appVersion");
+        var osVersion = Str(body.Value, "osVersion");
+        if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(machineId))
+            return Fail(StatusCodes.Status400BadRequest, "missing key or machineId");
+
+        var license = await db.Licenses.FirstOrDefaultAsync(l => l.Key == key && l.ProductId == ok.Product.Id, ct);
+        if (license is null)
+            return Fail(StatusCodes.Status404NotFound, "invalid license key");
+
+        var now = DateTime.UtcNow;
+        var expired = license.ActivatedAt is not null && license.ExpiresAt is DateTime exp && exp < now;
+        if (license.IsRevoked)
+            return Fail(StatusCodes.Status422UnprocessableEntity, "license revoked");
+        if (!license.IsActive)
+            return Fail(StatusCodes.Status422UnprocessableEntity, "license inactive");
+        if (expired)
+            return Fail(StatusCodes.Status422UnprocessableEntity, "license expired");
+
+        var seat = await db.Activations.FirstOrDefaultAsync(
+            a => a.LicenseId == license.Id && a.MachineId == machineId && a.DeactivatedAt == null, ct);
+        if (seat is null)
+            return Fail(StatusCodes.Status422UnprocessableEntity, "machine not activated");
+
+        seat.LastSeenAt = now;
+        if (appVersion.Length > 0) seat.AppVersion = appVersion;
+        if (osVersion.Length > 0) seat.OsVersion = osVersion;
+        seat.IpAddress = ctx.Connection.RemoteIpAddress?.ToString() ?? seat.IpAddress;
+
+        db.Heartbeats.Add(new Heartbeat
+        {
+            LicenseId = license.Id,
+            ActivationId = seat.Id,
+            MachineId = machineId,
+            AppVersion = seat.AppVersion,
+            OsVersion = seat.OsVersion,
+            IpAddress = seat.IpAddress,
+            SeenAt = now
+        });
+
+        var cutoff = now.AddDays(-14);
+        await db.Heartbeats.Where(h => h.SeenAt < cutoff).ExecuteDeleteAsync(ct);
+        await db.SaveChangesAsync(ct);
+
+        return Json(StatusCodes.Status200OK, new
+        {
+            valid = true,
+            isActive = true,
+            isRevoked = false,
+            expired = false,
+            expiresAt = FormatExpiry(license.ExpiresAt),
+            planType = license.PlanType,
+            machineId,
+            lastSeenAt = FormatExpiry(now)
+        });
     }
 
     public static int PlanDurationDays(string planType) => PlanCatalog.DefaultDurationDays(planType);

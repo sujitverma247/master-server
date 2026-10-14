@@ -46,6 +46,9 @@ namespace MasterServer.Data.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<DateTime?>("LastSeenAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<int>("LicenseId")
                         .HasColumnType("integer");
 
@@ -60,6 +63,8 @@ namespace MasterServer.Data.Migrations
                         .HasColumnType("character varying(128)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("LastSeenAt");
 
                     b.HasIndex("LicenseId", "MachineId");
 
@@ -327,6 +332,54 @@ namespace MasterServer.Data.Migrations
                         .IsUnique();
 
                     b.ToTable("GatewayPlans", (string)null);
+                });
+
+            modelBuilder.Entity("MasterServer.Data.Heartbeat", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<int>("ActivationId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("AppVersion")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("IpAddress")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("LicenseId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("MachineId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("OsVersion")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<DateTime>("SeenAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("LicenseId");
+
+                    b.HasIndex("MachineId");
+
+                    b.HasIndex("SeenAt");
+
+                    b.ToTable("Heartbeats", (string)null);
                 });
 
             modelBuilder.Entity("MasterServer.Data.KeyBatch", b =>
