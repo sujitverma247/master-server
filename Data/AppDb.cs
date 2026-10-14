@@ -60,6 +60,11 @@ public class AppDb : DbContext
     public DbSet<License> Licenses => Set<License>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<UsedNonce> UsedNonces => Set<UsedNonce>();
+    public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
+    public DbSet<AdminSession> AdminSessions => Set<AdminSession>();
+    public DbSet<Permission> Permissions => Set<Permission>();
+    public DbSet<RolePermission> RolePermissions => Set<RolePermission>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -109,6 +114,56 @@ public class AppDb : DbContext
             entity.Property(n => n.Nonce).HasMaxLength(128);
             entity.HasIndex(n => n.Nonce).IsUnique();
             entity.HasIndex(n => n.CreatedAt);
+        });
+
+        modelBuilder.Entity<AdminUser>(entity =>
+        {
+            entity.ToTable("AdminUsers");
+            entity.Property(u => u.Username).HasMaxLength(128);
+            entity.Property(u => u.PasswordHash).HasMaxLength(256);
+            entity.Property(u => u.Role).HasMaxLength(64);
+            entity.Property(u => u.DisplayName).HasMaxLength(200);
+            entity.HasIndex(u => u.Username).IsUnique();
+        });
+
+        modelBuilder.Entity<AdminSession>(entity =>
+        {
+            entity.ToTable("AdminSessions");
+            entity.Property(s => s.TokenHash).HasMaxLength(128);
+            entity.HasIndex(s => s.TokenHash).IsUnique();
+            entity.HasIndex(s => s.ExpiresAt);
+            entity.HasOne(s => s.User)
+                .WithMany()
+                .HasForeignKey(s => s.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Permission>(entity =>
+        {
+            entity.ToTable("Permissions");
+            entity.Property(p => p.Code).HasMaxLength(64);
+            entity.Property(p => p.Description).HasMaxLength(256);
+            entity.HasIndex(p => p.Code).IsUnique();
+        });
+
+        modelBuilder.Entity<RolePermission>(entity =>
+        {
+            entity.ToTable("RolePermissions");
+            entity.Property(r => r.Role).HasMaxLength(64);
+            entity.Property(r => r.PermissionCode).HasMaxLength(64);
+            entity.HasIndex(r => new { r.Role, r.PermissionCode }).IsUnique();
+        });
+
+        modelBuilder.Entity<AuditLog>(entity =>
+        {
+            entity.ToTable("AuditLogs");
+            entity.Property(a => a.Username).HasMaxLength(128);
+            entity.Property(a => a.Role).HasMaxLength(64);
+            entity.Property(a => a.Action).HasMaxLength(64);
+            entity.Property(a => a.Target).HasMaxLength(256);
+            entity.Property(a => a.Details).HasMaxLength(1024);
+            entity.Property(a => a.IpAddress).HasMaxLength(64);
+            entity.HasIndex(a => a.CreatedAt);
         });
     }
 }

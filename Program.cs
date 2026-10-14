@@ -1,3 +1,4 @@
+using MasterServer.Admin;
 using MasterServer.Data;
 using MasterServer.Licensing;
 using Microsoft.EntityFrameworkCore;
@@ -14,7 +15,21 @@ if (string.IsNullOrWhiteSpace(rawConnection))
 var connectionString = ConnectionStrings.Normalize(rawConnection);
 builder.Services.AddDbContext<AppDb>(options => options.UseNpgsql(connectionString));
 
+const string AdminCorsPolicy = "admin-panel";
+var adminOrigins = (Environment.GetEnvironmentVariable("ADMIN_ORIGIN") ?? builder.Configuration["Admin:Origin"] ?? "")
+    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy(AdminCorsPolicy, policy =>
+    {
+        if (adminOrigins.Length > 0)
+            policy.WithOrigins(adminOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials();
+    });
+});
+
 var app = builder.Build();
+
+app.UseCors(AdminCorsPolicy);
 
 app.Use(async (ctx, next) =>
 {
@@ -40,6 +55,9 @@ app.MapGet("/health", () => Results.Json(new { status = "ok" }, new System.Text.
 var skewSeconds = builder.Configuration.GetValue("License:TimestampSkewSeconds", 300);
 LicenseApi.Map(app, skewSeconds);
 
+var sessionHours = builder.Configuration.GetValue("Admin:SessionHours", 12);
+AdminApi.Map(app, sessionHours);
+
 try
 {
     var csb = new NpgsqlConnectionStringBuilder(connectionString);
@@ -55,6 +73,7 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDb>();
     await db.Database.MigrateAsync();
     await ProductSeed.ApplyAsync(db, app.Configuration, app.Logger, CancellationToken.None);
+    await AdminSeed.ApplyAsync(db, app.Configuration, app.Logger, CancellationToken.None);
 }
 
 app.Run();
