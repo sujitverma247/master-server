@@ -60,7 +60,11 @@ public static class LicenseApi
         if (license.ActivatedAt is null)
         {
             license.ActivatedAt = now;
-            license.ExpiresAt ??= now.AddDays(PlanDurationDays(license.PlanType));
+            if (license.ExpiresAt is null)
+            {
+                var days = await PlanCatalog.DurationDaysAsync(db, license.PlanType, ct);
+                license.ExpiresAt = now.AddDays(days);
+            }
         }
 
         if (existing is null)
@@ -146,16 +150,7 @@ public static class LicenseApi
         return Json(StatusCodes.Status200OK, new { deactivated = true });
     }
 
-    public static int PlanDurationDays(string planType) => planType.Trim().ToLowerInvariant() switch
-    {
-        "monthly" => 30,
-        "1year" => 365,
-        "2year" => 730,
-        "3year" => 1095,
-        "5year" => 1825,
-        "lifetime" => 36500,
-        _ => 365
-    };
+    public static int PlanDurationDays(string planType) => PlanCatalog.DefaultDurationDays(planType);
 
     private static string FormatExpiry(DateTime? expiresAt) =>
         expiresAt is DateTime value ? value.ToString("o") : "";

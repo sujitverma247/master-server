@@ -3,17 +3,47 @@ using Microsoft.EntityFrameworkCore;
 
 namespace MasterServer.Data;
 
+public class Brand
+{
+    public int Id { get; set; }
+    public string Slug { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string SupportEmail { get; set; } = "";
+    public string WebsiteUrl { get; set; } = "";
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+}
+
 public class Product
 {
     public int Id { get; set; }
+    public int? BrandId { get; set; }
+    public Brand? Brand { get; set; }
     public string Slug { get; set; } = "";
     public string DisplayName { get; set; } = "";
     public string AppKey { get; set; } = "";
     public string KeyPrefix { get; set; } = "";
     public string UserAgentPrefix { get; set; } = "";
     public string HmacSecret { get; set; } = "";
+    public string LatestVersion { get; set; } = "";
+    public string? DownloadUrl { get; set; }
+    public string? ReleaseNotes { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; }
+}
+
+/// <summary>A sellable plan. PlanType strings on licenses map to a Plan by Code (optional catalog).</summary>
+public class Plan
+{
+    public int Id { get; set; }
+    public string Code { get; set; } = "";
+    public string DisplayName { get; set; } = "";
+    public int DurationDays { get; set; }
+    public int DefaultMaxMachines { get; set; } = 3;
+    public decimal Price { get; set; }
+    public string Currency { get; set; } = "";
+    public bool IsActive { get; set; } = true;
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
 
 public class License
@@ -56,7 +86,9 @@ public class AppDb : DbContext
 {
     public AppDb(DbContextOptions<AppDb> options) : base(options) { }
 
+    public DbSet<Brand> Brands => Set<Brand>();
     public DbSet<Product> Products => Set<Product>();
+    public DbSet<Plan> Plans => Set<Plan>();
     public DbSet<License> Licenses => Set<License>();
     public DbSet<Activation> Activations => Set<Activation>();
     public DbSet<UsedNonce> UsedNonces => Set<UsedNonce>();
@@ -68,6 +100,16 @@ public class AppDb : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<Brand>(entity =>
+        {
+            entity.ToTable("Brands");
+            entity.Property(b => b.Slug).HasMaxLength(64);
+            entity.Property(b => b.Name).HasMaxLength(200);
+            entity.Property(b => b.SupportEmail).HasMaxLength(256);
+            entity.Property(b => b.WebsiteUrl).HasMaxLength(512);
+            entity.HasIndex(b => b.Slug).IsUnique();
+        });
+
         modelBuilder.Entity<Product>(entity =>
         {
             entity.ToTable("Products");
@@ -77,8 +119,24 @@ public class AppDb : DbContext
             entity.Property(p => p.KeyPrefix).HasMaxLength(16);
             entity.Property(p => p.UserAgentPrefix).HasMaxLength(128);
             entity.Property(p => p.HmacSecret).HasMaxLength(512);
+            entity.Property(p => p.LatestVersion).HasMaxLength(64);
+            entity.Property(p => p.DownloadUrl).HasMaxLength(512);
             entity.HasIndex(p => p.Slug).IsUnique();
             entity.HasIndex(p => p.AppKey).IsUnique();
+            entity.HasOne(p => p.Brand)
+                .WithMany()
+                .HasForeignKey(p => p.BrandId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        modelBuilder.Entity<Plan>(entity =>
+        {
+            entity.ToTable("Plans");
+            entity.Property(p => p.Code).HasMaxLength(32);
+            entity.Property(p => p.DisplayName).HasMaxLength(200);
+            entity.Property(p => p.Currency).HasMaxLength(8);
+            entity.Property(p => p.Price).HasColumnType("numeric(12,2)");
+            entity.HasIndex(p => p.Code).IsUnique();
         });
 
         modelBuilder.Entity<License>(entity =>

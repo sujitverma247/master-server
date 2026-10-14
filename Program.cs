@@ -1,4 +1,5 @@
 using MasterServer.Admin;
+using MasterServer.Catalog;
 using MasterServer.Data;
 using MasterServer.Licensing;
 using Microsoft.EntityFrameworkCore;
@@ -57,6 +58,7 @@ LicenseApi.Map(app, skewSeconds);
 
 var sessionHours = builder.Configuration.GetValue("Admin:SessionHours", 12);
 AdminApi.Map(app, sessionHours);
+CatalogApi.Map(app, skewSeconds);
 
 try
 {
