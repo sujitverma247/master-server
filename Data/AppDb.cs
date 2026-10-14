@@ -144,6 +144,7 @@ public class AppDb : DbContext
     public DbSet<Heartbeat> Heartbeats => Set<Heartbeat>();
     public DbSet<Ticket> Tickets => Set<Ticket>();
     public DbSet<TicketMessage> TicketMessages => Set<TicketMessage>();
+    public DbSet<Invoice> Invoices => Set<Invoice>();
     public DbSet<UsedNonce> UsedNonces => Set<UsedNonce>();
     public DbSet<AdminUser> AdminUsers => Set<AdminUser>();
     public DbSet<AdminSession> AdminSessions => Set<AdminSession>();
@@ -401,6 +402,35 @@ public class AppDb : DbContext
                 .WithMany(t => t.Messages)
                 .HasForeignKey(m => m.TicketId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<Invoice>(entity =>
+        {
+            entity.ToTable("Invoices");
+            entity.Property(i => i.PublicId).HasMaxLength(64);
+            entity.Property(i => i.Number).HasMaxLength(32);
+            entity.Property(i => i.CustomerEmail).HasMaxLength(256);
+            entity.Property(i => i.CustomerName).HasMaxLength(200);
+            entity.Property(i => i.ProductName).HasMaxLength(200);
+            entity.Property(i => i.BrandName).HasMaxLength(200);
+            entity.Property(i => i.SupportEmail).HasMaxLength(256);
+            entity.Property(i => i.PlanType).HasMaxLength(32);
+            entity.Property(i => i.Currency).HasMaxLength(8);
+            entity.Property(i => i.Gateway).HasMaxLength(32);
+            entity.Property(i => i.OrderPublicId).HasMaxLength(64);
+            entity.Property(i => i.PolicyVersion).HasMaxLength(64);
+            entity.Property(i => i.Status).HasMaxLength(16);
+            entity.Property(i => i.PdfSha256).HasMaxLength(64);
+            entity.Property(i => i.Amount).HasColumnType("numeric(12,2)");
+            entity.HasIndex(i => i.PublicId).IsUnique();
+            entity.HasIndex(i => i.Number).IsUnique();
+            entity.HasIndex(i => i.OrderId).IsUnique();
+            entity.HasIndex(i => i.CustomerId);
+            entity.HasIndex(i => i.Status);
+            entity.HasOne(i => i.Order)
+                .WithMany()
+                .HasForeignKey(i => i.OrderId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<UsedNonce>(entity =>

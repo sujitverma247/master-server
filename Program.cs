@@ -6,6 +6,7 @@ using MasterServer.Keys;
 using MasterServer.Licensing;
 using MasterServer.Mail;
 using MasterServer.Payments;
+using MasterServer.Invoices;
 using MasterServer.Support;
 using MasterServer.Telemetry;
 using Microsoft.EntityFrameworkCore;
@@ -73,6 +74,7 @@ PaymentsApi.Map(app, gateways, mail);
 MailApi.Map(app, mail);
 TelemetryApi.Map(app);
 SupportApi.Map(app);
+InvoicesApi.Map(app);
 
 try
 {

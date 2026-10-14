@@ -1,4 +1,5 @@
 using MasterServer.Data;
+using MasterServer.Invoices;
 using MasterServer.Keys;
 using MasterServer.Mail;
 using Microsoft.EntityFrameworkCore;
@@ -25,7 +26,10 @@ public static class OrderFulfillment
     {
         if (order.Status == OrderStatuses.Refunded) return "order refunded";
         if (order.Status == OrderStatuses.Paid && order.LicenseId is not null)
+        {
+            await InvoiceIssuer.IssueForOrderAsync(db, order, ct);
             return null;
+        }
 
         var product = await db.Products.FirstOrDefaultAsync(p => p.Id == order.ProductId, ct);
         if (product is null) return "unknown product";
@@ -65,6 +69,7 @@ public static class OrderFulfillment
         if (!string.IsNullOrEmpty(externalPaymentId))
             order.ExternalPaymentId = externalPaymentId;
         await MailOutbox.EnqueueLicenseIssuedAsync(db, license, order, ct);
+        await InvoiceIssuer.IssueForOrderAsync(db, order, ct);
         return null;
     }
 
@@ -91,6 +96,7 @@ public static class OrderFulfillment
         order.Status = OrderStatuses.Refunded;
         order.UpdatedAt = DateTime.UtcNow;
         await MailOutbox.EnqueueOrderRefundedAsync(db, order, license, ct);
+        await InvoiceIssuer.VoidForOrderAsync(db, order.Id, ct);
         return null;
     }
 }

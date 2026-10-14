@@ -23,6 +23,7 @@ public class PermissionsTests
         Assert.DoesNotContain(Permissions.CustomerWrite, agentGrants);
         Assert.DoesNotContain(Permissions.PaymentWrite, agentGrants);
         Assert.DoesNotContain(Permissions.MailWrite, agentGrants);
+        Assert.DoesNotContain(Permissions.InvoiceWrite, agentGrants);
         Assert.Contains(Permissions.KeyRead, agentGrants);
         Assert.Contains(Permissions.CustomerRead, agentGrants);
         Assert.Contains(Permissions.PaymentRead, agentGrants);
@@ -30,6 +31,7 @@ public class PermissionsTests
         Assert.Contains(Permissions.TelemetryRead, agentGrants);
         Assert.Contains(Permissions.SupportRead, agentGrants);
         Assert.Contains(Permissions.SupportWrite, agentGrants);
+        Assert.Contains(Permissions.InvoiceRead, agentGrants);
     }
 
     [Fact]
