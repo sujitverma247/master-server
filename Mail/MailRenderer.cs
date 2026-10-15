@@ -6,11 +6,9 @@ public static class MailRenderer
 {
     private static readonly Regex Token = new(@"\{\{([a-zA-Z]+)\}\}", RegexOptions.Compiled);
 
-    public static RenderedMail Render(string templateId, MailVars vars)
+    public static RenderedMail Render(string templateId, MailVars vars, string? locale = null)
     {
-        if (!MailTemplates.Catalog.TryGetValue(templateId, out var template))
-            throw new ArgumentOutOfRangeException(nameof(templateId), "unknown mail template");
-
+        var template = MailTemplates.Resolve(templateId, locale);
         return new RenderedMail(Replace(template.Subject, vars), Replace(template.Body, vars));
     }
 

@@ -130,6 +130,7 @@ public static class KeysApi
         var displayName = Str(body.Value, "name");
         if (displayName.Length > 200) return Fail(400, "name too long");
         var customer = await CustomerStore.FindOrCreateAsync(db, email, displayName, "key-issue", ct);
+        CustomerStore.ApplyLocale(customer, FirstNonEmpty(Str(body.Value, "locale"), Str(body.Value, "lang"), Str(body.Value, "language")));
 
         var notes = Str(body.Value, "notes");
         if (notes.Length > 1024) return Fail(400, "notes too long");

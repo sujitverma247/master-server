@@ -22,7 +22,8 @@ public sealed record WebhookEnvelope(
     string? ExternalSubscriptionId = null,
     DateTime? PaidAt = null,
     DateTime? ExpiresAt = null,
-    bool IsSubscription = false);
+    bool IsSubscription = false,
+    string? Locale = null);
 
 /// <summary>
 /// One payment provider. Name is the URL/path segment and Order.Gateway value.

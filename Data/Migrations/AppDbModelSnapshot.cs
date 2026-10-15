@@ -276,6 +276,11 @@ namespace MasterServer.Data.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
 
+                    b.Property<string>("Locale")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
+
                     b.Property<string>("Notes")
                         .IsRequired()
                         .HasMaxLength(1024)
@@ -787,6 +792,11 @@ namespace MasterServer.Data.Migrations
 
                     b.Property<int?>("LicenseId")
                         .HasColumnType("integer");
+
+                    b.Property<string>("Locale")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)");
 
                     b.Property<int?>("OrderId")
                         .HasColumnType("integer");

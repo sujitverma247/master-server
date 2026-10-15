@@ -54,7 +54,8 @@ public static class MailOutbox
             PlanType: license?.PlanType ?? order?.PlanType ?? "",
             OrderPublicId: order?.PublicId ?? "");
 
-        var rendered = MailRenderer.Render(template, vars);
+        var locale = MailLocale.Normalize(customer?.Locale);
+        var rendered = MailRenderer.Render(template, vars, locale);
         db.MailOutbox.Add(new OutboundMail
         {
             Template = template,
@@ -65,6 +66,7 @@ public static class MailOutbox
             FromName = fromName,
             Subject = rendered.Subject,
             Body = rendered.Body,
+            Locale = locale,
             Status = MailStatuses.Pending,
             ProductId = product?.Id,
             CustomerId = customer?.Id,

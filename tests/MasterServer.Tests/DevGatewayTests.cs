@@ -67,6 +67,19 @@ public class DevGatewayTests
         Assert.Equal("EUR", envelope.Currency);
         Assert.Equal("Invoice Buyer", envelope.CustomerName);
         Assert.Equal(new DateTime(2026, 10, 15, 4, 3, 0, DateTimeKind.Utc), envelope.PaidAt);
+        Assert.Null(envelope.Locale);
+    }
+
+    [Fact]
+    public void TryVerify_parses_locale_lang_or_language()
+    {
+        var body = """
+            {"eventType":"paid","publicId":"","status":"paid","externalPaymentId":"pay_de",
+             "externalPlanId":"pdt_acme_1year","email":"buyer@example.com","amount":49.00,"currency":"EUR",
+             "locale":"de-DE"}
+            """;
+        Assert.True(Verify(body, publicId: "", out var envelope));
+        Assert.Equal("de-DE", envelope.Locale);
     }
 
     [Fact]

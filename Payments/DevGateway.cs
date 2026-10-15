@@ -63,6 +63,7 @@ public sealed class DevGateway : IPaymentGateway
         var name = StrAny(root, "customerName", "name");
         var externalCustomerId = Str(root, "externalCustomerId");
         var externalSubscriptionId = StrAny(root, "externalSubscriptionId", "subscriptionId");
+        var locale = StrAny(root, "locale", "lang", "language");
 
         envelope = new WebhookEnvelope(
             eventId,
@@ -79,7 +80,8 @@ public sealed class DevGateway : IPaymentGateway
             ExternalSubscriptionId: externalSubscriptionId.Length > 0 ? externalSubscriptionId : null,
             PaidAt: Dt(root, "paidAt"),
             ExpiresAt: Dt(root, "expiresAt"),
-            IsSubscription: Flag(root, "isSubscription"));
+            IsSubscription: Flag(root, "isSubscription"),
+            Locale: locale.Length > 0 ? locale : null);
         return true;
     }
 

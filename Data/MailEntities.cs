@@ -12,6 +12,7 @@ public class OutboundMail
     public string FromName { get; set; } = "";
     public string Subject { get; set; } = "";
     public string Body { get; set; } = "";
+    public string Locale { get; set; } = "";
     public string Status { get; set; } = MailStatuses.Pending;
     public string Provider { get; set; } = "";
     public string? ProviderMessageId { get; set; }

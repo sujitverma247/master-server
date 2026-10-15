@@ -55,6 +55,7 @@ public static class PaymentsApi
             return Fail(422, "accept the current refund policy");
         if (!await RefundPolicyGate.HasAcceptedCurrentAsync(db, customer.Id, ct))
             return Fail(422, "accept the current refund policy");
+        CustomerStore.ApplyLocale(customer, FirstNonEmpty(Str(body.Value, "locale"), Str(body.Value, "lang"), Str(body.Value, "language")));
 
         var gateway = gateways.Resolve(Str(body.Value, "gateway"));
         if (gateway is null) return Fail(422, "unknown gateway");
@@ -170,6 +171,8 @@ public static class PaymentsApi
         var order = resolved.Order;
         paymentEvent.OrderId = order.Id;
         WebhookOrder.StampCharge(order, envelope);
+        var buyer = await db.Customers.FirstOrDefaultAsync(c => c.Id == order.CustomerId, ct);
+        CustomerStore.ApplyLocale(buyer, envelope.Locale);
 
         var error = await OrderFulfillment.ApplyAsync(
             db, order, envelope.Status, envelope.ExternalPaymentId, ct,

@@ -31,4 +31,13 @@ public static class CustomerStore
         db.Customers.Add(customer);
         return customer;
     }
+
+    public static void ApplyLocale(Customer? customer, string? raw)
+    {
+        if (customer is null || string.IsNullOrWhiteSpace(raw)) return;
+        var locale = Mail.MailLocale.Normalize(raw);
+        if (customer.Locale == locale) return;
+        customer.Locale = locale;
+        customer.UpdatedAt = DateTime.UtcNow;
+    }
 }

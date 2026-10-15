@@ -67,6 +67,7 @@ public static class WebhookOrder
         if (displayName.Length > 200) displayName = displayName[..200];
 
         var customer = await CustomerStore.FindOrCreateAsync(db, email, displayName, gatewayName, ct);
+        CustomerStore.ApplyLocale(customer, envelope.Locale);
         if (!string.IsNullOrEmpty(envelope.ExternalCustomerId) && string.IsNullOrEmpty(customer.ExternalCustomerId))
             customer.ExternalCustomerId = envelope.ExternalCustomerId;
         if (customer.Id == 0)

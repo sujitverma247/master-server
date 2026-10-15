@@ -9,6 +9,8 @@ public class Customer
     public string Phone { get; set; } = "";
     public string Notes { get; set; } = "";
     public string Source { get; set; } = "";
+    /// <summary>Mail language: "en" or "de", from checkout/OS language family.</summary>
+    public string Locale { get; set; } = "";
     public string? ExternalCustomerId { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

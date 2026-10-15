@@ -244,6 +244,7 @@ public class AppDb : DbContext
             entity.Property(c => c.Phone).HasMaxLength(32);
             entity.Property(c => c.Notes).HasMaxLength(1024);
             entity.Property(c => c.Source).HasMaxLength(32);
+            entity.Property(c => c.Locale).HasMaxLength(10);
             entity.Property(c => c.ExternalCustomerId).HasMaxLength(128);
             entity.HasIndex(c => c.Email).IsUnique();
             entity.HasIndex(c => c.ExternalCustomerId);
@@ -333,6 +334,7 @@ public class AppDb : DbContext
             entity.Property(m => m.FromEmail).HasMaxLength(256);
             entity.Property(m => m.FromName).HasMaxLength(200);
             entity.Property(m => m.Subject).HasMaxLength(300);
+            entity.Property(m => m.Locale).HasMaxLength(10);
             entity.Property(m => m.Status).HasMaxLength(16);
             entity.Property(m => m.Provider).HasMaxLength(32);
             entity.Property(m => m.ProviderMessageId).HasMaxLength(128);
