@@ -3,6 +3,7 @@ using System.Text.Json;
 using MasterServer.Admin;
 using MasterServer.Customers;
 using MasterServer.Data;
+using MasterServer.Licensing;
 using MasterServer.Security;
 using Microsoft.EntityFrameworkCore;
 
@@ -28,6 +29,7 @@ public static class CatalogApi
         app.MapGet("/admin/plans", (HttpContext ctx, AppDb db, CancellationToken ct) => ListPlans(ctx, db, ct));
         app.MapPost("/admin/plans", (HttpContext ctx, AppDb db, CancellationToken ct) => CreatePlan(ctx, db, ct));
         app.MapPut("/admin/plans/{id:int}", (int id, HttpContext ctx, AppDb db, CancellationToken ct) => UpdatePlan(id, ctx, db, ct));
+        app.MapDelete("/admin/plans/{id:int}", (int id, HttpContext ctx, AppDb db, CancellationToken ct) => DeletePlan(id, ctx, db, ct));
 
         app.MapGet("/v1/app/update-check", (HttpContext ctx, AppDb db, CancellationToken ct) => UpdateCheck(ctx, db, skewSeconds, ct));
     }
@@ -384,8 +386,81 @@ public static class CatalogApi
         var p = await Require(ctx, db, Permissions.ProductRead, ct);
         if (p.Result is not null) return p.Result;
 
-        var plans = await db.Plans.OrderBy(x => x.Id).ToListAsync(ct);
-        return Json(200, new { plans = plans.Select(PlanView) });
+        var q = db.Plans.AsNoTracking().AsQueryable();
+        var search = ctx.Request.Query["q"].ToString().Trim().ToLowerInvariant();
+        if (search.Length > 0)
+        {
+            q = q.Where(plan =>
+                plan.DisplayName.ToLower().Contains(search)
+                || plan.Code.Contains(search)
+                || plan.Currency.ToLower().Contains(search));
+        }
+
+        var status = ctx.Request.Query["status"].ToString().Trim().ToLowerInvariant();
+        if (status == "active") q = q.Where(plan => plan.IsActive);
+        else if (status == "inactive") q = q.Where(plan => !plan.IsActive);
+
+        var currency = ctx.Request.Query["currency"].ToString().Trim().ToUpperInvariant();
+        if (currency.Length == 3) q = q.Where(plan => plan.Currency == currency);
+
+        var duration = ctx.Request.Query["duration"].ToString().Trim().ToLowerInvariant();
+        if (duration is "monthly" or "1year" or "2year" or "3year" or "5year" or "lifetime")
+            q = q.Where(plan => plan.DurationDays == PlanCatalog.DefaultDurationDays(duration));
+
+        if (DateOnly.TryParse(ctx.Request.Query["from"], out var fromDay))
+        {
+            var fromUtc = fromDay.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(plan => plan.CreatedAt >= fromUtc);
+        }
+        if (DateOnly.TryParse(ctx.Request.Query["to"], out var toDay))
+        {
+            var toExclusive = toDay.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(plan => plan.CreatedAt < toExclusive);
+        }
+
+        var projected = q.Select(plan => new
+        {
+            Plan = plan,
+            LicenseCount = db.Licenses.Count(l => l.PlanType.ToLower() == plan.Code.ToLower())
+        });
+
+        var sort = ctx.Request.Query["sort"].ToString().Trim().ToLowerInvariant();
+        var asc = ctx.Request.Query["dir"].ToString().Trim().Equals("asc", StringComparison.OrdinalIgnoreCase);
+        projected = sort switch
+        {
+            "name" => asc ? projected.OrderBy(x => x.Plan.DisplayName) : projected.OrderByDescending(x => x.Plan.DisplayName),
+            "code" => asc ? projected.OrderBy(x => x.Plan.Code) : projected.OrderByDescending(x => x.Plan.Code),
+            "duration" => asc ? projected.OrderBy(x => x.Plan.DurationDays) : projected.OrderByDescending(x => x.Plan.DurationDays),
+            "machines" => asc ? projected.OrderBy(x => x.Plan.DefaultMaxMachines) : projected.OrderByDescending(x => x.Plan.DefaultMaxMachines),
+            "price" => asc ? projected.OrderBy(x => x.Plan.Price) : projected.OrderByDescending(x => x.Plan.Price),
+            "currency" => asc ? projected.OrderBy(x => x.Plan.Currency) : projected.OrderByDescending(x => x.Plan.Currency),
+            "status" => asc ? projected.OrderBy(x => x.Plan.IsActive) : projected.OrderByDescending(x => x.Plan.IsActive),
+            _ => asc ? projected.OrderBy(x => x.Plan.CreatedAt) : projected.OrderByDescending(x => x.Plan.CreatedAt)
+        };
+
+        var total = await projected.CountAsync(ct);
+        var limit = CatalogPaging.NormalizeLimit(ctx.Request.Query["limit"].ToString());
+        var page = CatalogPaging.ClampPage(CatalogPaging.NormalizePage(ctx.Request.Query["page"].ToString()), total, limit);
+        var rows = await projected.Skip((page - 1) * limit).Take(limit).ToListAsync(ct);
+
+        var allCount = await db.Plans.CountAsync(ct);
+        var activeCount = await db.Plans.CountAsync(plan => plan.IsActive, ct);
+        var currencies = await db.Plans
+            .Where(plan => plan.Currency != "")
+            .Select(plan => plan.Currency)
+            .Distinct()
+            .OrderBy(code => code)
+            .ToListAsync(ct);
+
+        return Json(200, new
+        {
+            plans = rows.Select(x => PlanView(x.Plan, x.LicenseCount)),
+            total,
+            page,
+            limit,
+            counts = new { total = allCount, active = activeCount, inactive = allCount - activeCount },
+            currencies
+        });
     }
 
     private static async Task<IResult> CreatePlan(HttpContext ctx, AppDb db, CancellationToken ct)
@@ -397,20 +472,33 @@ public static class CatalogApi
         if (body is null) return Fail(400, "invalid JSON body");
 
         var code = Str(body.Value, "code").ToLowerInvariant();
-        if (string.IsNullOrWhiteSpace(code)) return Fail(400, "missing code");
-        if (!TryInt(body.Value, "durationDays", out var durationDays) || durationDays <= 0)
-            return Fail(400, "durationDays must be a positive integer");
+        var displayName = Str(body.Value, "displayName");
+        var currency = Str(body.Value, "currency").ToUpperInvariant();
+        if (!IsPlanCode(code)) return Fail(400, "code must be 2-32 chars of a-z, 0-9, hyphen");
+        if (string.IsNullOrWhiteSpace(displayName)) return Fail(400, "missing displayName");
+        if (displayName.Length < 2) return Fail(400, "displayName too short");
+        if (displayName.Length > 200) return Fail(400, "displayName too long");
+        if (!TryInt(body.Value, "durationDays", out var durationDays) || durationDays < 1 || durationDays > 36500)
+            return Fail(400, "durationDays must be 1-36500");
+        if (!IsCurrency(currency)) return Fail(400, "currency must be a 3-letter code");
         if (await db.Plans.AnyAsync(x => x.Code == code, ct)) return Fail(409, "code already exists");
 
         var maxMachines = TryInt(body.Value, "defaultMaxMachines", out var mm) ? Math.Clamp(mm, 1, 100) : 3;
+        if (TryDecimal(body.Value, "price", out var price))
+        {
+            if (price < 0m) return Fail(400, "price must be zero or greater");
+            if (price > 99_999_999.99m) return Fail(400, "price too large");
+        }
+        else price = 0m;
+
         var plan = new Plan
         {
             Code = code,
-            DisplayName = Str(body.Value, "displayName") is { Length: > 0 } d ? d : code,
+            DisplayName = displayName,
             DurationDays = durationDays,
             DefaultMaxMachines = maxMachines,
-            Price = TryDecimal(body.Value, "price", out var price) ? price : 0m,
-            Currency = Str(body.Value, "currency").ToUpperInvariant(),
+            Price = decimal.Round(price, 2, MidpointRounding.AwayFromZero),
+            Currency = currency,
             IsActive = true,
             CreatedAt = DateTime.UtcNow
         };
@@ -431,16 +519,72 @@ public static class CatalogApi
         var plan = await db.Plans.FirstOrDefaultAsync(x => x.Id == id, ct);
         if (plan is null) return Fail(404, "plan not found");
 
-        if (Str(body.Value, "displayName") is { Length: > 0 } dn) plan.DisplayName = dn;
-        if (TryInt(body.Value, "durationDays", out var dd) && dd > 0) plan.DurationDays = dd;
-        if (TryInt(body.Value, "defaultMaxMachines", out var mm)) plan.DefaultMaxMachines = Math.Clamp(mm, 1, 100);
-        if (TryDecimal(body.Value, "price", out var price)) plan.Price = price;
-        if (body.Value.TryGetProperty("currency", out _)) plan.Currency = Str(body.Value, "currency").ToUpperInvariant();
-        if (TryBool(body.Value, "isActive", out var active)) plan.IsActive = active;
+        var changes = new List<string>();
+        if (Str(body.Value, "displayName") is { Length: > 0 } dn)
+        {
+            if (dn.Length < 2) return Fail(400, "displayName too short");
+            if (dn.Length > 200) return Fail(400, "displayName too long");
+            plan.DisplayName = dn;
+            changes.Add("displayName");
+        }
+        if (body.Value.TryGetProperty("durationDays", out _))
+        {
+            if (!TryInt(body.Value, "durationDays", out var dd) || dd < 1 || dd > 36500)
+                return Fail(400, "durationDays must be 1-36500");
+            plan.DurationDays = dd;
+            changes.Add("durationDays");
+        }
+        if (TryInt(body.Value, "defaultMaxMachines", out var mm))
+        {
+            plan.DefaultMaxMachines = Math.Clamp(mm, 1, 100);
+            changes.Add("defaultMaxMachines");
+        }
+        if (body.Value.TryGetProperty("price", out _))
+        {
+            if (!TryDecimal(body.Value, "price", out var price) || price < 0m)
+                return Fail(400, "price must be zero or greater");
+            if (price > 99_999_999.99m) return Fail(400, "price too large");
+            plan.Price = decimal.Round(price, 2, MidpointRounding.AwayFromZero);
+            changes.Add("price");
+        }
+        if (body.Value.TryGetProperty("currency", out _))
+        {
+            var currency = Str(body.Value, "currency").ToUpperInvariant();
+            if (!IsCurrency(currency)) return Fail(400, "currency must be a 3-letter code");
+            plan.Currency = currency;
+            changes.Add("currency");
+        }
+        if (TryBool(body.Value, "isActive", out var active))
+        {
+            plan.IsActive = active;
+            changes.Add($"isActive={active}");
+        }
 
-        Audit.Record(db, ctx, p.Principal, "plan.update", plan.Code);
+        Audit.Record(db, ctx, p.Principal, "plan.update", plan.Code, string.Join(",", changes));
         await db.SaveChangesAsync(ct);
         return Json(200, new { plan = PlanView(plan) });
+    }
+
+    private static async Task<IResult> DeletePlan(int id, HttpContext ctx, AppDb db, CancellationToken ct)
+    {
+        var p = await Require(ctx, db, Permissions.PlanWrite, ct);
+        if (p.Result is not null) return p.Result;
+
+        var plan = await db.Plans.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (plan is null) return Fail(404, "plan not found");
+        if (await db.Licenses.AnyAsync(l => l.PlanType.ToLower() == plan.Code.ToLower(), ct))
+            return Fail(409, "plan has licenses");
+        if (await db.KeyBatches.AnyAsync(b => b.PlanType.ToLower() == plan.Code.ToLower(), ct))
+            return Fail(409, "plan has key batches");
+        if (await db.Orders.AnyAsync(o => o.PlanType.ToLower() == plan.Code.ToLower(), ct))
+            return Fail(409, "plan has orders");
+        if (await db.GatewayPlans.AnyAsync(g => g.PlanCode.ToLower() == plan.Code.ToLower(), ct))
+            return Fail(409, "plan has gateway maps");
+
+        db.Plans.Remove(plan);
+        Audit.Record(db, ctx, p.Principal, "plan.delete", plan.Code);
+        await db.SaveChangesAsync(ct);
+        return Json(200, new { ok = true, id });
     }
 
     // ---------- Public update-check (HMAC) ----------
@@ -492,9 +636,10 @@ public static class CatalogApi
         createdAt = p.CreatedAt.ToString("o")
     };
 
-    private static object PlanView(Plan p) => new
+    private static object PlanView(Plan p, int licenseCount = 0) => new
     {
         p.Id, p.Code, p.DisplayName, p.DurationDays, p.DefaultMaxMachines, p.Price, p.Currency, p.IsActive,
+        licenseCount,
         createdAt = p.CreatedAt.ToString("o")
     };
 
@@ -514,6 +659,12 @@ public static class CatalogApi
 
     private static bool IsSlug(string s) =>
         s.Length is >= 2 and <= 64 && s.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
+
+    private static bool IsPlanCode(string s) =>
+        s.Length is >= 2 and <= 32 && s.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
+
+    private static bool IsCurrency(string s) =>
+        s.Length == 3 && s.All(c => c is >= 'A' and <= 'Z');
 
     private static string NewHmacSecret()
     {

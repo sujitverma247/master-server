@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MasterServer.Admin;
+using MasterServer.Catalog;
 using MasterServer.Customers;
 using MasterServer.Data;
 using MasterServer.Mail;
@@ -25,6 +26,8 @@ public static class PaymentsApi
 
         app.MapGet("/admin/gateway-plans", (HttpContext c, AppDb db, CancellationToken ct) => ListMaps(c, db, ct));
         app.MapPost("/admin/gateway-plans", (HttpContext c, AppDb db, CancellationToken ct) => CreateMap(c, db, ct));
+        app.MapPut("/admin/gateway-plans/{id:int}", (int id, HttpContext c, AppDb db, CancellationToken ct) => UpdateMap(id, c, db, ct));
+        app.MapDelete("/admin/gateway-plans/{id:int}", (int id, HttpContext c, AppDb db, CancellationToken ct) => DeleteMap(id, c, db, ct));
     }
 
     // ---------- Public checkout ----------
@@ -263,47 +266,176 @@ public static class PaymentsApi
     }
 
     // ---------- Gateway plan maps ----------
+    // Price lives on the payment gateway. These rows map (product + plan code) to the
+    // gateway's plan/product id, the same way the existing license server mapped Freemius
+    // plan ids (e.g. 68452 → 1year) without storing a local catalog price.
 
     private static async Task<IResult> ListMaps(HttpContext ctx, AppDb db, CancellationToken ct)
     {
-        var g = await Require(ctx, db, Permissions.PaymentRead, ct);
+        var g = await RequireAny(ctx, db, ct, Permissions.ProductRead, Permissions.PaymentRead);
         if (g.Result is not null) return g.Result;
-        var rows = await db.GatewayPlans.AsNoTracking().OrderBy(m => m.Id).ToListAsync(ct);
-        return Json(200, new { gatewayPlans = rows.Select(MapView) });
+
+        var q = db.GatewayPlans.AsNoTracking().AsQueryable();
+        var search = ctx.Request.Query["q"].ToString().Trim().ToLowerInvariant();
+        if (search.Length > 0)
+        {
+            q = q.Where(m =>
+                m.PlanCode.Contains(search)
+                || m.Gateway.Contains(search)
+                || m.ExternalPlanId.ToLower().Contains(search)
+                || db.Products.Any(p => p.Id == m.ProductId && (p.DisplayName.ToLower().Contains(search) || p.Slug.Contains(search))));
+        }
+
+        var status = ctx.Request.Query["status"].ToString().Trim().ToLowerInvariant();
+        if (status == "active") q = q.Where(m => m.IsActive);
+        else if (status == "inactive") q = q.Where(m => !m.IsActive);
+
+        if (int.TryParse(ctx.Request.Query["productId"], out var productId) && productId > 0)
+            q = q.Where(m => m.ProductId == productId);
+
+        var gatewayFilter = ctx.Request.Query["gateway"].ToString().Trim().ToLowerInvariant();
+        if (gatewayFilter.Length > 0) q = q.Where(m => m.Gateway == gatewayFilter);
+
+        if (DateOnly.TryParse(ctx.Request.Query["from"], out var fromDay))
+        {
+            var fromUtc = fromDay.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(m => m.CreatedAt >= fromUtc);
+        }
+        if (DateOnly.TryParse(ctx.Request.Query["to"], out var toDay))
+        {
+            var toExclusive = toDay.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(m => m.CreatedAt < toExclusive);
+        }
+
+        var projected = q.Select(m => new
+        {
+            Map = m,
+            ProductName = db.Products.Where(p => p.Id == m.ProductId).Select(p => p.DisplayName).FirstOrDefault() ?? "",
+            ProductSlug = db.Products.Where(p => p.Id == m.ProductId).Select(p => p.Slug).FirstOrDefault() ?? "",
+            DisplayName = db.Plans.Where(p => p.Code == m.PlanCode).Select(p => p.DisplayName).FirstOrDefault() ?? m.PlanCode,
+            DurationDays = db.Plans.Where(p => p.Code == m.PlanCode).Select(p => (int?)p.DurationDays).FirstOrDefault() ?? 0,
+            DefaultMaxMachines = db.Plans.Where(p => p.Code == m.PlanCode).Select(p => (int?)p.DefaultMaxMachines).FirstOrDefault() ?? 3,
+            LicenseCount = db.Licenses.Count(l => l.ProductId == m.ProductId && l.PlanType.ToLower() == m.PlanCode)
+        });
+
+        var sort = ctx.Request.Query["sort"].ToString().Trim().ToLowerInvariant();
+        var asc = ctx.Request.Query["dir"].ToString().Trim().Equals("asc", StringComparison.OrdinalIgnoreCase);
+        projected = sort switch
+        {
+            "product" => asc ? projected.OrderBy(x => x.ProductName) : projected.OrderByDescending(x => x.ProductName),
+            "name" => asc ? projected.OrderBy(x => x.DisplayName) : projected.OrderByDescending(x => x.DisplayName),
+            "code" => asc ? projected.OrderBy(x => x.Map.PlanCode) : projected.OrderByDescending(x => x.Map.PlanCode),
+            "gateway" => asc ? projected.OrderBy(x => x.Map.Gateway) : projected.OrderByDescending(x => x.Map.Gateway),
+            "external" => asc ? projected.OrderBy(x => x.Map.ExternalPlanId) : projected.OrderByDescending(x => x.Map.ExternalPlanId),
+            "duration" => asc ? projected.OrderBy(x => x.DurationDays) : projected.OrderByDescending(x => x.DurationDays),
+            "machines" => asc ? projected.OrderBy(x => x.DefaultMaxMachines) : projected.OrderByDescending(x => x.DefaultMaxMachines),
+            "status" => asc ? projected.OrderBy(x => x.Map.IsActive) : projected.OrderByDescending(x => x.Map.IsActive),
+            _ => asc ? projected.OrderBy(x => x.Map.CreatedAt) : projected.OrderByDescending(x => x.Map.CreatedAt)
+        };
+
+        var total = await projected.CountAsync(ct);
+        var limit = CatalogPaging.NormalizeLimit(ctx.Request.Query["limit"].ToString());
+        var page = CatalogPaging.ClampPage(CatalogPaging.NormalizePage(ctx.Request.Query["page"].ToString()), total, limit);
+        var rows = await projected.Skip((page - 1) * limit).Take(limit).ToListAsync(ct);
+
+        var allCount = await db.GatewayPlans.CountAsync(ct);
+        var activeCount = await db.GatewayPlans.CountAsync(m => m.IsActive, ct);
+        var gateways = await db.GatewayPlans.Select(m => m.Gateway).Distinct().OrderBy(n => n).ToListAsync(ct);
+
+        return Json(200, new
+        {
+            plans = rows.Select(x => MapView(x.Map, x.ProductName, x.ProductSlug, x.DisplayName, x.DurationDays, x.DefaultMaxMachines, x.LicenseCount)),
+            gatewayPlans = rows.Select(x => MapView(x.Map, x.ProductName, x.ProductSlug, x.DisplayName, x.DurationDays, x.DefaultMaxMachines, x.LicenseCount)),
+            total,
+            page,
+            limit,
+            counts = new { total = allCount, active = activeCount, inactive = allCount - activeCount },
+            gateways
+        });
     }
 
     private static async Task<IResult> CreateMap(HttpContext ctx, AppDb db, CancellationToken ct)
     {
-        var g = await Require(ctx, db, Permissions.PaymentWrite, ct);
+        var g = await RequireAny(ctx, db, ct, Permissions.PlanWrite, Permissions.PaymentWrite);
         if (g.Result is not null) return g.Result;
 
         var body = await ReadBodyAsync(ctx, ct);
         if (body is null) return Fail(400, "invalid JSON body");
-        var gateway = Str(body.Value, "gateway").ToLowerInvariant();
-        var planCode = Str(body.Value, "planCode").ToLowerInvariant();
-        var externalPlanId = Str(body.Value, "externalPlanId");
-        if (gateway.Length == 0 || planCode.Length == 0 || externalPlanId.Length == 0)
-            return Fail(400, "missing gateway, planCode, or externalPlanId");
-        if (!TryInt(body.Value, "productId", out var productId))
-            return Fail(400, "missing productId");
-        if (!await db.Products.AnyAsync(p => p.Id == productId, ct))
+        if (!TryReadMapping(body.Value, out var mapping, out var error))
+            return Fail(400, error);
+
+        if (!await db.Products.AnyAsync(p => p.Id == mapping.ProductId, ct))
             return Fail(422, "unknown productId");
-        if (await db.GatewayPlans.AnyAsync(m => m.Gateway == gateway && m.ProductId == productId && m.PlanCode == planCode, ct))
+        if (await db.GatewayPlans.AnyAsync(m => m.Gateway == mapping.Gateway && m.ProductId == mapping.ProductId && m.PlanCode == mapping.PlanCode, ct))
             return Fail(409, "mapping already exists");
+
+        await UpsertPlanDurationAsync(db, mapping, ct);
 
         var row = new GatewayPlan
         {
-            Gateway = gateway,
-            ProductId = productId,
-            PlanCode = planCode,
-            ExternalPlanId = externalPlanId,
+            Gateway = mapping.Gateway,
+            ProductId = mapping.ProductId,
+            PlanCode = mapping.PlanCode,
+            ExternalPlanId = mapping.ExternalPlanId,
             IsActive = true,
             CreatedAt = DateTime.UtcNow
         };
         db.GatewayPlans.Add(row);
-        Audit.Record(db, ctx, g.Principal, "gateway-plan.create", $"{gateway}:{planCode}");
+        Audit.Record(db, ctx, g.Principal, "gateway-plan.create", $"{mapping.Gateway}:{mapping.PlanCode}", $"product={mapping.ProductId},external={mapping.ExternalPlanId}");
         await db.SaveChangesAsync(ct);
-        return Json(201, new { gatewayPlan = MapView(row) });
+        return Json(201, new { plan = await MapViewAsync(db, row, ct), gatewayPlan = await MapViewAsync(db, row, ct) });
+    }
+
+    private static async Task<IResult> UpdateMap(int id, HttpContext ctx, AppDb db, CancellationToken ct)
+    {
+        var g = await RequireAny(ctx, db, ct, Permissions.PlanWrite, Permissions.PaymentWrite);
+        if (g.Result is not null) return g.Result;
+
+        var body = await ReadBodyAsync(ctx, ct);
+        if (body is null) return Fail(400, "invalid JSON body");
+
+        var row = await db.GatewayPlans.FirstOrDefaultAsync(m => m.Id == id, ct);
+        if (row is null) return Fail(404, "plan not found");
+
+        if (!TryReadMapping(body.Value, out var mapping, out var error, requireAll: false))
+            return Fail(400, error);
+
+        if (mapping.ProductId > 0)
+        {
+            if (!await db.Products.AnyAsync(p => p.Id == mapping.ProductId, ct))
+                return Fail(422, "unknown productId");
+            row.ProductId = mapping.ProductId;
+        }
+        if (mapping.Gateway.Length > 0) row.Gateway = mapping.Gateway;
+        if (mapping.PlanCode.Length > 0) row.PlanCode = mapping.PlanCode;
+        if (mapping.ExternalPlanId.Length > 0) row.ExternalPlanId = mapping.ExternalPlanId;
+        if (TryBool(body.Value, "isActive", out var active)) row.IsActive = active;
+
+        if (await db.GatewayPlans.AnyAsync(m => m.Id != id && m.Gateway == row.Gateway && m.ProductId == row.ProductId && m.PlanCode == row.PlanCode, ct))
+            return Fail(409, "mapping already exists");
+
+        mapping = mapping with { ProductId = row.ProductId, Gateway = row.Gateway, PlanCode = row.PlanCode, ExternalPlanId = row.ExternalPlanId };
+        await UpsertPlanDurationAsync(db, mapping, ct);
+
+        Audit.Record(db, ctx, g.Principal, "gateway-plan.update", $"{row.Gateway}:{row.PlanCode}", $"external={row.ExternalPlanId}");
+        await db.SaveChangesAsync(ct);
+        return Json(200, new { plan = await MapViewAsync(db, row, ct), gatewayPlan = await MapViewAsync(db, row, ct) });
+    }
+
+    private static async Task<IResult> DeleteMap(int id, HttpContext ctx, AppDb db, CancellationToken ct)
+    {
+        var g = await RequireAny(ctx, db, ct, Permissions.PlanWrite, Permissions.PaymentWrite);
+        if (g.Result is not null) return g.Result;
+
+        var row = await db.GatewayPlans.FirstOrDefaultAsync(m => m.Id == id, ct);
+        if (row is null) return Fail(404, "plan not found");
+        if (await db.Licenses.AnyAsync(l => l.ProductId == row.ProductId && l.PlanType.ToLower() == row.PlanCode, ct))
+            return Fail(409, "plan has licenses");
+
+        db.GatewayPlans.Remove(row);
+        Audit.Record(db, ctx, g.Principal, "gateway-plan.delete", $"{row.Gateway}:{row.PlanCode}");
+        await db.SaveChangesAsync(ct);
+        return Json(200, new { ok = true, id });
     }
 
     // ---------- Helpers ----------
@@ -353,11 +485,134 @@ public static class PaymentsApi
         createdAt = o.CreatedAt.ToString("o")
     };
 
-    private static object MapView(GatewayPlan m) => new
+    private readonly record struct MappingInput(
+        int ProductId,
+        string Gateway,
+        string PlanCode,
+        string ExternalPlanId,
+        string DisplayName,
+        int DurationDays,
+        int DefaultMaxMachines);
+
+    private static bool TryReadMapping(JsonElement body, out MappingInput mapping, out string error, bool requireAll = true)
     {
-        m.Id, m.Gateway, m.ProductId, m.PlanCode, m.ExternalPlanId, m.IsActive,
+        mapping = default;
+        error = "";
+        var gateway = Str(body, "gateway").ToLowerInvariant();
+        var planCode = FirstNonEmpty(Str(body, "planCode"), Str(body, "code")).ToLowerInvariant();
+        var externalPlanId = FirstNonEmpty(Str(body, "externalPlanId"), Str(body, "gatewayPlanId"));
+        TryInt(body, "productId", out var productId);
+        var displayName = Str(body, "displayName");
+        var durationDays = TryInt(body, "durationDays", out var dd) ? dd : 0;
+        var maxMachines = TryInt(body, "defaultMaxMachines", out var mm) ? Math.Clamp(mm, 1, 100) : 0;
+
+        if (requireAll)
+        {
+            if (productId <= 0) { error = "missing productId"; return false; }
+            if (gateway.Length == 0) { error = "missing gateway"; return false; }
+            if (!IsPlanCode(planCode)) { error = "code must be 2-32 chars of a-z, 0-9, hyphen"; return false; }
+            if (externalPlanId.Length is < 1 or > 128) { error = "missing externalPlanId"; return false; }
+            if (displayName.Length is < 2 or > 200) { error = "displayName too short"; return false; }
+            if (durationDays is < 1 or > 36500) { error = "durationDays must be 1-36500"; return false; }
+            if (maxMachines == 0) maxMachines = 3;
+        }
+        else
+        {
+            if (gateway.Length > 32) { error = "missing gateway"; return false; }
+            if (planCode.Length > 0 && !IsPlanCode(planCode)) { error = "code must be 2-32 chars of a-z, 0-9, hyphen"; return false; }
+            if (externalPlanId.Length > 128) { error = "missing externalPlanId"; return false; }
+            if (displayName.Length > 0 && displayName.Length < 2) { error = "displayName too short"; return false; }
+            if (durationDays > 0 && durationDays > 36500) { error = "durationDays must be 1-36500"; return false; }
+        }
+
+        mapping = new MappingInput(productId, gateway, planCode, externalPlanId, displayName, durationDays, maxMachines);
+        return true;
+    }
+
+    private static async Task UpsertPlanDurationAsync(AppDb db, MappingInput mapping, CancellationToken ct)
+    {
+        if (mapping.PlanCode.Length == 0) return;
+        var plan = await db.Plans.FirstOrDefaultAsync(p => p.Code == mapping.PlanCode, ct);
+        if (plan is null)
+        {
+            db.Plans.Add(new Plan
+            {
+                Code = mapping.PlanCode,
+                DisplayName = mapping.DisplayName.Length > 0 ? mapping.DisplayName : mapping.PlanCode,
+                DurationDays = mapping.DurationDays > 0 ? mapping.DurationDays : 365,
+                DefaultMaxMachines = mapping.DefaultMaxMachines,
+                Price = 0m,
+                Currency = "",
+                IsActive = true,
+                CreatedAt = DateTime.UtcNow
+            });
+            return;
+        }
+        if (mapping.DisplayName.Length >= 2) plan.DisplayName = mapping.DisplayName;
+        if (mapping.DurationDays is >= 1 and <= 36500) plan.DurationDays = mapping.DurationDays;
+        if (mapping.DefaultMaxMachines is >= 1 and <= 100) plan.DefaultMaxMachines = mapping.DefaultMaxMachines;
+    }
+
+    private static async Task<object> MapViewAsync(AppDb db, GatewayPlan m, CancellationToken ct)
+    {
+        var product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == m.ProductId, ct);
+        var plan = await db.Plans.AsNoTracking().FirstOrDefaultAsync(p => p.Code == m.PlanCode, ct);
+        var licenseCount = await db.Licenses.CountAsync(l => l.ProductId == m.ProductId && l.PlanType.ToLower() == m.PlanCode, ct);
+        return MapView(m, product?.DisplayName ?? "", product?.Slug ?? "", plan?.DisplayName ?? m.PlanCode, plan?.DurationDays ?? 0, plan?.DefaultMaxMachines ?? 3, licenseCount);
+    }
+
+    private static object MapView(
+        GatewayPlan m,
+        string productName = "",
+        string productSlug = "",
+        string displayName = "",
+        int durationDays = 0,
+        int defaultMaxMachines = 3,
+        int licenseCount = 0) => new
+    {
+        m.Id,
+        m.Gateway,
+        m.ProductId,
+        productName,
+        productSlug,
+        planCode = m.PlanCode,
+        code = m.PlanCode,
+        displayName = displayName.Length > 0 ? displayName : m.PlanCode,
+        durationDays,
+        defaultMaxMachines,
+        m.ExternalPlanId,
+        m.IsActive,
+        licenseCount,
         createdAt = m.CreatedAt.ToString("o")
     };
+
+    private static async Task<Gate> RequireAny(HttpContext ctx, AppDb db, CancellationToken ct, params string[] permissions)
+    {
+        var principal = await AdminAuth.ResolveAsync(ctx, db, ct);
+        if (principal is null) return new Gate(Fail(401, "unauthorized"), null);
+        if (!permissions.Any(principal.Has)) return new Gate(Fail(403, "forbidden"), null);
+        return new Gate(null, principal);
+    }
+
+    private static bool IsPlanCode(string s) =>
+        s.Length is >= 2 and <= 32 && s.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
+
+    private static string FirstNonEmpty(params string[] values)
+    {
+        foreach (var value in values)
+            if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
+        return "";
+    }
+
+    private static bool TryBool(JsonElement body, string name, out bool result)
+    {
+        result = false;
+        if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty(name, out var value))
+            return false;
+        if (value.ValueKind == JsonValueKind.True) { result = true; return true; }
+        if (value.ValueKind == JsonValueKind.False) { result = false; return true; }
+        return false;
+    }
 
     private static string MaskKey(string? key) =>
         string.IsNullOrEmpty(key) ? "" : (key.Length <= 4 ? "****" : "****" + key[^4..]);
