@@ -241,6 +241,7 @@ public class AppDb : DbContext
             entity.ToTable("Customers");
             entity.Property(c => c.Email).HasMaxLength(256);
             entity.Property(c => c.DisplayName).HasMaxLength(200);
+            entity.Property(c => c.Phone).HasMaxLength(32);
             entity.Property(c => c.Notes).HasMaxLength(1024);
             entity.Property(c => c.Source).HasMaxLength(32);
             entity.Property(c => c.ExternalCustomerId).HasMaxLength(128);

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MasterServer.Admin;
+using MasterServer.Catalog;
 using MasterServer.Data;
 using Microsoft.EntityFrameworkCore;
 
@@ -37,24 +38,89 @@ public static class CustomersApi
         if (search.Length > 0)
         {
             var s = search.ToLowerInvariant();
-            q = q.Where(c => c.Email.Contains(s) || c.DisplayName.ToLower().Contains(s));
+            q = q.Where(c =>
+                c.Email.Contains(s)
+                || c.DisplayName.ToLower().Contains(s)
+                || c.Phone.Contains(s)
+                || c.Notes.ToLower().Contains(s)
+                || c.Source.ToLower().Contains(s));
         }
 
-        var limit = int.TryParse(ctx.Request.Query["limit"], out var lim) ? Math.Clamp(lim, 1, 1000) : 100;
-        var rows = await q.OrderByDescending(c => c.Id).Take(limit).ToListAsync(ct);
+        var status = ctx.Request.Query["status"].ToString().Trim().ToLowerInvariant();
+        if (status == "active") q = q.Where(c => c.IsActive);
+        else if (status == "inactive") q = q.Where(c => !c.IsActive);
+
+        var source = ctx.Request.Query["source"].ToString().Trim();
+        if (source.Length > 0) q = q.Where(c => c.Source == source);
+
+        if (DateOnly.TryParse(ctx.Request.Query["from"], out var fromDay))
+        {
+            var fromUtc = fromDay.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(c => c.CreatedAt >= fromUtc);
+        }
+        if (DateOnly.TryParse(ctx.Request.Query["to"], out var toDay))
+        {
+            var toExclusive = toDay.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(c => c.CreatedAt < toExclusive);
+        }
+
+        var projected = q.Select(c => new
+        {
+            Customer = c,
+            LicenseCount = db.Licenses.Count(l => l.CustomerId == c.Id)
+        });
+
+        var sort = ctx.Request.Query["sort"].ToString().Trim().ToLowerInvariant();
+        var asc = ctx.Request.Query["dir"].ToString().Trim().Equals("asc", StringComparison.OrdinalIgnoreCase);
+        projected = sort switch
+        {
+            "email" => asc ? projected.OrderBy(x => x.Customer.Email) : projected.OrderByDescending(x => x.Customer.Email),
+            "phone" => asc ? projected.OrderBy(x => x.Customer.Phone) : projected.OrderByDescending(x => x.Customer.Phone),
+            "name" or "displayname" => asc
+                ? projected.OrderBy(x => x.Customer.DisplayName)
+                : projected.OrderByDescending(x => x.Customer.DisplayName),
+            "source" => asc ? projected.OrderBy(x => x.Customer.Source) : projected.OrderByDescending(x => x.Customer.Source),
+            "keys" or "licenses" => asc
+                ? projected.OrderBy(x => x.LicenseCount)
+                : projected.OrderByDescending(x => x.LicenseCount),
+            "status" => asc ? projected.OrderBy(x => x.Customer.IsActive) : projected.OrderByDescending(x => x.Customer.IsActive),
+            _ => asc ? projected.OrderBy(x => x.Customer.CreatedAt) : projected.OrderByDescending(x => x.Customer.CreatedAt)
+        };
+
+        var total = await projected.CountAsync(ct);
+        var limit = CatalogPaging.NormalizeLimit(ctx.Request.Query["limit"].ToString());
+        var page = CatalogPaging.ClampPage(CatalogPaging.NormalizePage(ctx.Request.Query["page"].ToString()), total, limit);
+        var rows = await projected.Skip((page - 1) * limit).Take(limit).ToListAsync(ct);
+
+        var allCount = await db.Customers.CountAsync(ct);
+        var activeCount = await db.Customers.CountAsync(c => c.IsActive, ct);
+        var sources = await db.Customers.AsNoTracking()
+            .Where(c => c.Source != "")
+            .Select(c => c.Source)
+            .Distinct()
+            .OrderBy(s => s)
+            .ToListAsync(ct);
 
         var current = await RefundPolicyGate.CurrentAsync(db, ct);
         HashSet<int> accepted = [];
         if (current is not null && rows.Count > 0)
         {
-            var ids = rows.Select(c => c.Id).ToList();
+            var ids = rows.Select(x => x.Customer.Id).ToList();
             accepted = (await db.RefundPolicyAcceptances.AsNoTracking()
                 .Where(a => a.PolicyId == current.Id && ids.Contains(a.CustomerId))
                 .Select(a => a.CustomerId)
                 .ToListAsync(ct)).ToHashSet();
         }
 
-        return Json(200, new { customers = rows.Select(c => Summary(c, accepted.Contains(c.Id))) });
+        return Json(200, new
+        {
+            customers = rows.Select(x => Summary(x.Customer, accepted.Contains(x.Customer.Id), x.LicenseCount)),
+            total,
+            page,
+            limit,
+            counts = new { total = allCount, active = activeCount, inactive = allCount - activeCount },
+            sources
+        });
     }
 
     private static async Task<IResult> Get(int id, HttpContext ctx, AppDb db, CancellationToken ct)
@@ -82,15 +148,24 @@ public static class CustomersApi
         if (body is null) return Fail(400, "invalid JSON body");
         if (!EmailAddress.TryNormalize(Str(body.Value, "email"), out var email))
             return Fail(400, "invalid email");
+        var displayName = Str(body.Value, "displayName");
+        var phone = Str(body.Value, "phone");
+        var notes = Str(body.Value, "notes");
+        var source = Str(body.Value, "source");
+        if (displayName.Length > 200) return Fail(400, "displayName too long");
+        if (phone.Length > 32) return Fail(400, "phone too long");
+        if (notes.Length > 1024) return Fail(400, "notes too long");
+        if (source.Length > 32) return Fail(400, "source too long");
         if (await db.Customers.AnyAsync(c => c.Email == email, ct))
             return Fail(409, "email already exists");
 
         var customer = new Customer
         {
             Email = email,
-            DisplayName = Str(body.Value, "displayName"),
-            Notes = Str(body.Value, "notes"),
-            Source = Str(body.Value, "source") is { Length: > 0 } src ? src : "manual",
+            DisplayName = displayName,
+            Phone = phone,
+            Notes = notes,
+            Source = source.Length > 0 ? source : "manual",
             IsActive = true,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow
@@ -128,15 +203,35 @@ public static class CustomersApi
                 foreach (var license in licenses) license.CustomerEmail = email;
             }
         }
-        if (body.Value.TryGetProperty("displayName", out _)) { customer.DisplayName = Str(body.Value, "displayName"); changes.Add("displayName"); }
-        if (body.Value.TryGetProperty("notes", out _)) { customer.Notes = Str(body.Value, "notes"); changes.Add("notes"); }
+        if (body.Value.TryGetProperty("displayName", out _))
+        {
+            var displayName = Str(body.Value, "displayName");
+            if (displayName.Length > 200) return Fail(400, "displayName too long");
+            customer.DisplayName = displayName;
+            changes.Add("displayName");
+        }
+        if (body.Value.TryGetProperty("phone", out _))
+        {
+            var phone = Str(body.Value, "phone");
+            if (phone.Length > 32) return Fail(400, "phone too long");
+            customer.Phone = phone;
+            changes.Add("phone");
+        }
+        if (body.Value.TryGetProperty("notes", out _))
+        {
+            var notes = Str(body.Value, "notes");
+            if (notes.Length > 1024) return Fail(400, "notes too long");
+            customer.Notes = notes;
+            changes.Add("notes");
+        }
         if (TryBool(body.Value, "isActive", out var active)) { customer.IsActive = active; changes.Add($"isActive={active}"); }
 
         customer.UpdatedAt = DateTime.UtcNow;
         Audit.Record(db, ctx, g.Principal, "customer.update", $"customer#{customer.Id}", string.Join(",", changes));
         await db.SaveChangesAsync(ct);
         var acceptedCurrent = await RefundPolicyGate.HasAcceptedCurrentAsync(db, customer.Id, ct);
-        return Json(200, new { customer = Summary(customer, acceptedCurrent) });
+        var licenseCount = await db.Licenses.CountAsync(l => l.CustomerId == customer.Id, ct);
+        return Json(200, new { customer = Summary(customer, acceptedCurrent, licenseCount) });
     }
 
     // ---------- Policies (admin) ----------
@@ -293,16 +388,17 @@ public static class CustomersApi
 
     // ---------- Views / helpers ----------
 
-    private static object Summary(Customer c, bool acceptedCurrent) => new
+    private static object Summary(Customer c, bool acceptedCurrent, int licenseCount = 0) => new
     {
-        c.Id, c.Email, c.DisplayName, c.Notes, c.Source, c.IsActive, acceptedCurrent,
+        c.Id, c.Email, c.DisplayName, c.Phone, c.Notes, c.Source, c.IsActive, acceptedCurrent, licenseCount,
         createdAt = c.CreatedAt.ToString("o"),
         updatedAt = c.UpdatedAt.ToString("o")
     };
 
     private static object Detail(Customer c, bool acceptedCurrent) => new
     {
-        c.Id, c.Email, c.DisplayName, c.Notes, c.Source, c.ExternalCustomerId, c.IsActive, acceptedCurrent,
+        c.Id, c.Email, c.DisplayName, c.Phone, c.Notes, c.Source, c.ExternalCustomerId, c.IsActive, acceptedCurrent,
+        licenseCount = c.Licenses.Count,
         createdAt = c.CreatedAt.ToString("o"),
         updatedAt = c.UpdatedAt.ToString("o"),
         licenses = c.Licenses.OrderByDescending(l => l.Id).Select(l => new

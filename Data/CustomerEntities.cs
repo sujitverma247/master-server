@@ -6,6 +6,7 @@ public class Customer
     public int Id { get; set; }
     public string Email { get; set; } = "";
     public string DisplayName { get; set; } = "";
+    public string Phone { get; set; } = "";
     public string Notes { get; set; } = "";
     public string Source { get; set; } = "";
     public string? ExternalCustomerId { get; set; }

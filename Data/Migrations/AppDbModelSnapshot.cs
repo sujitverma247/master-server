@@ -281,6 +281,11 @@ namespace MasterServer.Data.Migrations
                         .HasMaxLength(1024)
                         .HasColumnType("character varying(1024)");
 
+                    b.Property<string>("Phone")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
                     b.Property<string>("Source")
                         .IsRequired()
                         .HasMaxLength(32)
