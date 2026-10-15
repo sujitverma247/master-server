@@ -215,6 +215,11 @@ namespace MasterServer.Data.Migrations
                     b.Property<bool>("IsActive")
                         .HasColumnType("boolean");
 
+                    b.Property<string>("LogoUrl")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasMaxLength(200)

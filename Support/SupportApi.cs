@@ -134,7 +134,13 @@ public static class SupportApi
         if (int.TryParse(ctx.Request.Query["customerId"], out var cid)) q = q.Where(t => t.CustomerId == cid);
         var search = ctx.Request.Query["q"].ToString().Trim();
         if (search.Length > 0)
-            q = q.Where(t => t.PublicId == search || t.Subject.ToLower().Contains(search.ToLower()));
+        {
+            var s = search.ToLowerInvariant();
+            q = q.Where(t =>
+                t.PublicId.ToLower().Contains(s) ||
+                t.Subject.ToLower().Contains(s) ||
+                t.Customer.Email.ToLower().Contains(s));
+        }
 
         var limit = int.TryParse(ctx.Request.Query["limit"], out var lim) ? Math.Clamp(lim, 1, 1000) : 100;
         var rows = await q.OrderByDescending(t => t.UpdatedAt).Take(limit).ToListAsync(ct);

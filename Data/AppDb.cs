@@ -10,6 +10,7 @@ public class Brand
     public string Name { get; set; } = "";
     public string SupportEmail { get; set; } = "";
     public string WebsiteUrl { get; set; } = "";
+    public string LogoUrl { get; set; } = "";
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
@@ -161,6 +162,7 @@ public class AppDb : DbContext
             entity.Property(b => b.Name).HasMaxLength(200);
             entity.Property(b => b.SupportEmail).HasMaxLength(256);
             entity.Property(b => b.WebsiteUrl).HasMaxLength(512);
+            entity.Property(b => b.LogoUrl).HasMaxLength(512);
             entity.HasIndex(b => b.Slug).IsUnique();
         });
 

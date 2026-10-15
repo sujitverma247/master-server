@@ -40,6 +40,27 @@ public class AnalyticsWindowTests
         Assert.Equal(12, year.Count);
         Assert.Equal("2026-01", year[0].Label);
         Assert.Equal("2026-12", year[^1].Label);
+        Assert.Equal(new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc), year[0].EndExclusive);
+    }
+
+    [Fact]
+    public void Monthly_buckets_follow_calendar_months()
+    {
+        var from = new DateTime(2025, 10, 16, 0, 0, 0, DateTimeKind.Utc);
+        var to = new DateTime(2026, 10, 16, 0, 0, 0, DateTimeKind.Utc);
+        var series = AnalyticsWindow.Series(from, to);
+        Assert.Equal("2025-10", series[0].Label);
+        Assert.Equal(new DateTime(2025, 11, 1, 0, 0, 0, DateTimeKind.Utc), series[0].EndExclusive);
+        Assert.Equal("2026-10", series[^1].Label);
+
+        var paidAt = new DateTime(2026, 10, 14, 20, 57, 0, DateTimeKind.Utc);
+        var counts = AnalyticsWindow.Bucket(new[] { paidAt }, series);
+        var october = -1;
+        for (var i = 0; i < series.Count; i++)
+            if (series[i].Label == "2026-10") october = i;
+        Assert.True(october >= 0);
+        Assert.Equal(1, counts[october]);
+        Assert.Equal(1, counts.Sum());
     }
 
     [Fact]

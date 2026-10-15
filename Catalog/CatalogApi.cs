@@ -1,5 +1,7 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using MasterServer.Admin;
+using MasterServer.Customers;
 using MasterServer.Data;
 using MasterServer.Security;
 using Microsoft.EntityFrameworkCore;
@@ -15,10 +17,12 @@ public static class CatalogApi
         app.MapGet("/admin/brands", (HttpContext ctx, AppDb db, CancellationToken ct) => ListBrands(ctx, db, ct));
         app.MapPost("/admin/brands", (HttpContext ctx, AppDb db, CancellationToken ct) => CreateBrand(ctx, db, ct));
         app.MapPut("/admin/brands/{id:int}", (int id, HttpContext ctx, AppDb db, CancellationToken ct) => UpdateBrand(id, ctx, db, ct));
+        app.MapDelete("/admin/brands/{id:int}", (int id, HttpContext ctx, AppDb db, CancellationToken ct) => DeleteBrand(id, ctx, db, ct));
 
         app.MapGet("/admin/products", (HttpContext ctx, AppDb db, CancellationToken ct) => ListProducts(ctx, db, ct));
         app.MapPost("/admin/products", (HttpContext ctx, AppDb db, CancellationToken ct) => CreateProduct(ctx, db, ct));
         app.MapPut("/admin/products/{id:int}", (int id, HttpContext ctx, AppDb db, CancellationToken ct) => UpdateProduct(id, ctx, db, ct));
+        app.MapDelete("/admin/products/{id:int}", (int id, HttpContext ctx, AppDb db, CancellationToken ct) => DeleteProduct(id, ctx, db, ct));
         app.MapPost("/admin/products/{id:int}/deactivate", (int id, HttpContext ctx, AppDb db, CancellationToken ct) => DeactivateProduct(id, ctx, db, ct));
 
         app.MapGet("/admin/plans", (HttpContext ctx, AppDb db, CancellationToken ct) => ListPlans(ctx, db, ct));
@@ -35,8 +39,67 @@ public static class CatalogApi
         var p = await Require(ctx, db, Permissions.ProductRead, ct);
         if (p.Result is not null) return p.Result;
 
-        var brands = await db.Brands.OrderBy(b => b.Id).ToListAsync(ct);
-        return Json(200, new { brands = brands.Select(BrandView) });
+        var q = db.Brands.AsNoTracking().AsQueryable();
+        var search = ctx.Request.Query["q"].ToString().Trim().ToLowerInvariant();
+        if (search.Length > 0)
+        {
+            q = q.Where(b =>
+                b.Name.ToLower().Contains(search)
+                || b.Slug.Contains(search)
+                || b.WebsiteUrl.ToLower().Contains(search)
+                || b.SupportEmail.ToLower().Contains(search)
+                || b.LogoUrl.ToLower().Contains(search));
+        }
+
+        var status = ctx.Request.Query["status"].ToString().Trim().ToLowerInvariant();
+        if (status == "active") q = q.Where(b => b.IsActive);
+        else if (status == "inactive") q = q.Where(b => !b.IsActive);
+
+        if (DateOnly.TryParse(ctx.Request.Query["from"], out var fromDay))
+        {
+            var fromUtc = fromDay.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(b => b.CreatedAt >= fromUtc);
+        }
+        if (DateOnly.TryParse(ctx.Request.Query["to"], out var toDay))
+        {
+            var toExclusive = toDay.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(b => b.CreatedAt < toExclusive);
+        }
+
+        var projected = q.Select(b => new
+        {
+            Brand = b,
+            ProductCount = db.Products.Count(prod => prod.BrandId == b.Id)
+        });
+
+        var sort = ctx.Request.Query["sort"].ToString().Trim().ToLowerInvariant();
+        var asc = ctx.Request.Query["dir"].ToString().Trim().Equals("asc", StringComparison.OrdinalIgnoreCase);
+        projected = sort switch
+        {
+            "name" => asc ? projected.OrderBy(x => x.Brand.Name) : projected.OrderByDescending(x => x.Brand.Name),
+            "slug" => asc ? projected.OrderBy(x => x.Brand.Slug) : projected.OrderByDescending(x => x.Brand.Slug),
+            "websiteurl" => asc ? projected.OrderBy(x => x.Brand.WebsiteUrl) : projected.OrderByDescending(x => x.Brand.WebsiteUrl),
+            "products" => asc ? projected.OrderBy(x => x.ProductCount) : projected.OrderByDescending(x => x.ProductCount),
+            "status" => asc ? projected.OrderBy(x => x.Brand.IsActive) : projected.OrderByDescending(x => x.Brand.IsActive),
+            _ => asc ? projected.OrderBy(x => x.Brand.CreatedAt) : projected.OrderByDescending(x => x.Brand.CreatedAt)
+        };
+
+        var total = await projected.CountAsync(ct);
+        var limit = CatalogPaging.NormalizeLimit(ctx.Request.Query["limit"].ToString());
+        var page = CatalogPaging.ClampPage(CatalogPaging.NormalizePage(ctx.Request.Query["page"].ToString()), total, limit);
+        var rows = await projected.Skip((page - 1) * limit).Take(limit).ToListAsync(ct);
+
+        var allCount = await db.Brands.CountAsync(ct);
+        var activeCount = await db.Brands.CountAsync(b => b.IsActive, ct);
+
+        return Json(200, new
+        {
+            brands = rows.Select(x => BrandView(x.Brand, x.ProductCount)),
+            total,
+            page,
+            limit,
+            counts = new { total = allCount, active = activeCount, inactive = allCount - activeCount }
+        });
     }
 
     private static async Task<IResult> CreateBrand(HttpContext ctx, AppDb db, CancellationToken ct)
@@ -51,14 +114,20 @@ public static class CatalogApi
         var name = Str(body.Value, "name");
         if (!IsSlug(slug)) return Fail(400, "slug must be 2-64 chars of a-z, 0-9, hyphen");
         if (string.IsNullOrWhiteSpace(name)) return Fail(400, "missing name");
+        if (name.Length < 2) return Fail(400, "name too short");
+        if (name.Length > 200) return Fail(400, "name too long");
         if (await db.Brands.AnyAsync(b => b.Slug == slug, ct)) return Fail(409, "slug already exists");
+
+        if (!TryBrandContact(body.Value, out var supportEmail, out var websiteUrl, out var logoUrl, out var contactError))
+            return contactError!;
 
         var brand = new Brand
         {
             Slug = slug,
             Name = name,
-            SupportEmail = Str(body.Value, "supportEmail"),
-            WebsiteUrl = Str(body.Value, "websiteUrl"),
+            SupportEmail = supportEmail,
+            WebsiteUrl = websiteUrl,
+            LogoUrl = logoUrl,
             IsActive = true,
             CreatedAt = DateTime.UtcNow
         };
@@ -79,14 +148,36 @@ public static class CatalogApi
         var brand = await db.Brands.FirstOrDefaultAsync(b => b.Id == id, ct);
         if (brand is null) return Fail(404, "brand not found");
 
-        if (Str(body.Value, "name") is { Length: > 0 } name) brand.Name = name;
-        if (body.Value.TryGetProperty("supportEmail", out _)) brand.SupportEmail = Str(body.Value, "supportEmail");
-        if (body.Value.TryGetProperty("websiteUrl", out _)) brand.WebsiteUrl = Str(body.Value, "websiteUrl");
+        if (Str(body.Value, "name") is { Length: > 0 } name)
+        {
+            if (name.Length < 2) return Fail(400, "name too short");
+            if (name.Length > 200) return Fail(400, "name too long");
+            brand.Name = name;
+        }
+        if (!TryBrandContact(body.Value, requirePresent: false, out var supportEmail, out var websiteUrl, out var logoUrl, out var contactError))
+            return contactError!;
+        if (body.Value.TryGetProperty("supportEmail", out _)) brand.SupportEmail = supportEmail;
+        if (body.Value.TryGetProperty("websiteUrl", out _)) brand.WebsiteUrl = websiteUrl;
+        if (body.Value.TryGetProperty("logoUrl", out _)) brand.LogoUrl = logoUrl;
         if (TryBool(body.Value, "isActive", out var active)) brand.IsActive = active;
 
         Audit.Record(db, ctx, p.Principal, "brand.update", brand.Slug);
         await db.SaveChangesAsync(ct);
         return Json(200, new { brand = BrandView(brand) });
+    }
+
+    private static async Task<IResult> DeleteBrand(int id, HttpContext ctx, AppDb db, CancellationToken ct)
+    {
+        var p = await Require(ctx, db, Permissions.ProductWrite, ct);
+        if (p.Result is not null) return p.Result;
+
+        var brand = await db.Brands.FirstOrDefaultAsync(b => b.Id == id, ct);
+        if (brand is null) return Fail(404, "brand not found");
+
+        db.Brands.Remove(brand);
+        Audit.Record(db, ctx, p.Principal, "brand.delete", brand.Slug);
+        await db.SaveChangesAsync(ct);
+        return Json(200, new { ok = true, id });
     }
 
     // ---------- Products ----------
@@ -96,8 +187,74 @@ public static class CatalogApi
         var p = await Require(ctx, db, Permissions.ProductRead, ct);
         if (p.Result is not null) return p.Result;
 
-        var products = await db.Products.OrderBy(x => x.Id).ToListAsync(ct);
-        return Json(200, new { products = products.Select(ProductView) });
+        var q = db.Products.AsNoTracking().AsQueryable();
+        var search = ctx.Request.Query["q"].ToString().Trim().ToLowerInvariant();
+        if (search.Length > 0)
+        {
+            q = q.Where(prod =>
+                prod.DisplayName.ToLower().Contains(search)
+                || prod.Slug.Contains(search)
+                || prod.AppKey.ToLower().Contains(search)
+                || prod.KeyPrefix.ToLower().Contains(search)
+                || prod.LatestVersion.ToLower().Contains(search)
+                || (prod.Brand != null && prod.Brand.Name.ToLower().Contains(search)));
+        }
+
+        var status = ctx.Request.Query["status"].ToString().Trim().ToLowerInvariant();
+        if (status == "active") q = q.Where(prod => prod.IsActive);
+        else if (status == "inactive") q = q.Where(prod => !prod.IsActive);
+
+        if (int.TryParse(ctx.Request.Query["brandId"], out var brandId) && brandId > 0)
+            q = q.Where(prod => prod.BrandId == brandId);
+
+        if (DateOnly.TryParse(ctx.Request.Query["from"], out var fromDay))
+        {
+            var fromUtc = fromDay.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(prod => prod.CreatedAt >= fromUtc);
+        }
+        if (DateOnly.TryParse(ctx.Request.Query["to"], out var toDay))
+        {
+            var toExclusive = toDay.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(prod => prod.CreatedAt < toExclusive);
+        }
+
+        var projected = q.Select(prod => new
+        {
+            Product = prod,
+            BrandName = prod.Brand != null ? prod.Brand.Name : "",
+            BrandLogoUrl = prod.Brand != null ? prod.Brand.LogoUrl : "",
+            LicenseCount = db.Licenses.Count(l => l.ProductId == prod.Id)
+        });
+
+        var sort = ctx.Request.Query["sort"].ToString().Trim().ToLowerInvariant();
+        var asc = ctx.Request.Query["dir"].ToString().Trim().Equals("asc", StringComparison.OrdinalIgnoreCase);
+        projected = sort switch
+        {
+            "name" => asc ? projected.OrderBy(x => x.Product.DisplayName) : projected.OrderByDescending(x => x.Product.DisplayName),
+            "slug" => asc ? projected.OrderBy(x => x.Product.Slug) : projected.OrderByDescending(x => x.Product.Slug),
+            "website" => asc ? projected.OrderBy(x => x.BrandName) : projected.OrderByDescending(x => x.BrandName),
+            "appkey" => asc ? projected.OrderBy(x => x.Product.AppKey) : projected.OrderByDescending(x => x.Product.AppKey),
+            "version" => asc ? projected.OrderBy(x => x.Product.LatestVersion) : projected.OrderByDescending(x => x.Product.LatestVersion),
+            "status" => asc ? projected.OrderBy(x => x.Product.IsActive) : projected.OrderByDescending(x => x.Product.IsActive),
+            _ => asc ? projected.OrderBy(x => x.Product.CreatedAt) : projected.OrderByDescending(x => x.Product.CreatedAt)
+        };
+
+        var total = await projected.CountAsync(ct);
+        var limit = CatalogPaging.NormalizeLimit(ctx.Request.Query["limit"].ToString());
+        var page = CatalogPaging.ClampPage(CatalogPaging.NormalizePage(ctx.Request.Query["page"].ToString()), total, limit);
+        var rows = await projected.Skip((page - 1) * limit).Take(limit).ToListAsync(ct);
+
+        var allCount = await db.Products.CountAsync(ct);
+        var activeCount = await db.Products.CountAsync(prod => prod.IsActive, ct);
+
+        return Json(200, new
+        {
+            products = rows.Select(x => ProductView(x.Product, x.BrandName, x.BrandLogoUrl, x.LicenseCount)),
+            total,
+            page,
+            limit,
+            counts = new { total = allCount, active = activeCount, inactive = allCount - activeCount }
+        });
     }
 
     private static async Task<IResult> CreateProduct(HttpContext ctx, AppDb db, CancellationToken ct)
@@ -111,33 +268,32 @@ public static class CatalogApi
         var slug = Str(body.Value, "slug");
         var appKey = Str(body.Value, "appKey");
         var userAgentPrefix = Str(body.Value, "userAgentPrefix");
-        var hmacSecret = Str(body.Value, "hmacSecret");
         var keyPrefix = Str(body.Value, "keyPrefix");
         var displayName = Str(body.Value, "displayName");
 
         if (!IsSlug(slug)) return Fail(400, "slug must be 2-64 chars of a-z, 0-9, hyphen");
+        if (string.IsNullOrWhiteSpace(displayName)) return Fail(400, "missing displayName");
+        if (displayName.Length < 2) return Fail(400, "displayName too short");
+        if (displayName.Length > 200) return Fail(400, "displayName too long");
         if (string.IsNullOrWhiteSpace(appKey)) return Fail(400, "missing appKey");
+        if (appKey.Length > 128) return Fail(400, "appKey too long");
         if (string.IsNullOrWhiteSpace(userAgentPrefix)) return Fail(400, "missing userAgentPrefix");
-        if (string.IsNullOrWhiteSpace(hmacSecret)) return Fail(400, "missing hmacSecret");
         if (await db.Products.AnyAsync(x => x.Slug == slug, ct)) return Fail(409, "slug already exists");
         if (await db.Products.AnyAsync(x => x.AppKey == appKey, ct)) return Fail(409, "appKey already exists");
 
-        int? brandId = null;
-        if (TryInt(body.Value, "brandId", out var bid))
-        {
-            if (!await db.Brands.AnyAsync(b => b.Id == bid, ct)) return Fail(422, "unknown brandId");
-            brandId = bid;
-        }
+        if (!TryInt(body.Value, "brandId", out var bid) || bid <= 0)
+            return Fail(400, "missing brandId");
+        if (!await db.Brands.AnyAsync(b => b.Id == bid, ct)) return Fail(422, "unknown brandId");
 
         var product = new Product
         {
-            BrandId = brandId,
+            BrandId = bid,
             Slug = slug,
-            DisplayName = string.IsNullOrWhiteSpace(displayName) ? slug : displayName,
+            DisplayName = displayName,
             AppKey = appKey,
             KeyPrefix = keyPrefix,
             UserAgentPrefix = userAgentPrefix,
-            HmacSecret = hmacSecret,
+            HmacSecret = NewHmacSecret(),
             LatestVersion = Str(body.Value, "latestVersion"),
             DownloadUrl = NullIfEmpty(Str(body.Value, "downloadUrl")),
             ReleaseNotes = NullIfEmpty(Str(body.Value, "releaseNotes")),
@@ -162,22 +318,25 @@ public static class CatalogApi
         if (product is null) return Fail(404, "product not found");
 
         var changes = new List<string>();
-        if (Str(body.Value, "displayName") is { Length: > 0 } dn) { product.DisplayName = dn; changes.Add("displayName"); }
+        if (Str(body.Value, "displayName") is { Length: > 0 } dn)
+        {
+            if (dn.Length < 2) return Fail(400, "displayName too short");
+            if (dn.Length > 200) return Fail(400, "displayName too long");
+            product.DisplayName = dn;
+            changes.Add("displayName");
+        }
         if (body.Value.TryGetProperty("keyPrefix", out _)) { product.KeyPrefix = Str(body.Value, "keyPrefix"); changes.Add("keyPrefix"); }
         if (Str(body.Value, "userAgentPrefix") is { Length: > 0 } ua) { product.UserAgentPrefix = ua; changes.Add("userAgentPrefix"); }
-        if (Str(body.Value, "hmacSecret") is { Length: > 0 } hs) { product.HmacSecret = hs; changes.Add("hmacSecret"); }
         if (body.Value.TryGetProperty("latestVersion", out _)) { product.LatestVersion = Str(body.Value, "latestVersion"); changes.Add("latestVersion"); }
         if (body.Value.TryGetProperty("downloadUrl", out _)) { product.DownloadUrl = NullIfEmpty(Str(body.Value, "downloadUrl")); changes.Add("downloadUrl"); }
         if (body.Value.TryGetProperty("releaseNotes", out _)) { product.ReleaseNotes = NullIfEmpty(Str(body.Value, "releaseNotes")); changes.Add("releaseNotes"); }
         if (TryBool(body.Value, "isActive", out var active)) { product.IsActive = active; changes.Add($"isActive={active}"); }
-        if (TryInt(body.Value, "brandId", out var bid))
+        if (body.Value.TryGetProperty("brandId", out _))
         {
-            if (bid == 0) { product.BrandId = null; }
-            else
-            {
-                if (!await db.Brands.AnyAsync(b => b.Id == bid, ct)) return Fail(422, "unknown brandId");
-                product.BrandId = bid;
-            }
+            if (!TryInt(body.Value, "brandId", out var bid) || bid <= 0)
+                return Fail(400, "missing brandId");
+            if (!await db.Brands.AnyAsync(b => b.Id == bid, ct)) return Fail(422, "unknown brandId");
+            product.BrandId = bid;
             changes.Add("brandId");
         }
 
@@ -198,6 +357,24 @@ public static class CatalogApi
         Audit.Record(db, ctx, p.Principal, "product.deactivate", product.Slug);
         await db.SaveChangesAsync(ct);
         return Json(200, new { product = ProductView(product) });
+    }
+
+    private static async Task<IResult> DeleteProduct(int id, HttpContext ctx, AppDb db, CancellationToken ct)
+    {
+        var p = await Require(ctx, db, Permissions.ProductWrite, ct);
+        if (p.Result is not null) return p.Result;
+
+        var product = await db.Products.FirstOrDefaultAsync(x => x.Id == id, ct);
+        if (product is null) return Fail(404, "product not found");
+        if (await db.Licenses.AnyAsync(l => l.ProductId == id, ct))
+            return Fail(409, "product has licenses");
+        if (await db.KeyBatches.AnyAsync(b => b.ProductId == id, ct))
+            return Fail(409, "product has key batches");
+
+        db.Products.Remove(product);
+        Audit.Record(db, ctx, p.Principal, "product.delete", product.Slug);
+        await db.SaveChangesAsync(ct);
+        return Json(200, new { ok = true, id });
     }
 
     // ---------- Plans ----------
@@ -289,15 +466,18 @@ public static class CatalogApi
 
     // ---------- Views ----------
 
-    private static object BrandView(Brand b) => new
+    private static object BrandView(Brand b, int productCount = 0) => new
     {
-        b.Id, b.Slug, b.Name, b.SupportEmail, b.WebsiteUrl, b.IsActive, createdAt = b.CreatedAt.ToString("o")
+        b.Id, b.Slug, b.Name, b.SupportEmail, b.WebsiteUrl, b.LogoUrl, b.IsActive, productCount,
+        createdAt = b.CreatedAt.ToString("o")
     };
 
-    private static object ProductView(Product p) => new
+    private static object ProductView(Product p, string brandName = "", string brandLogoUrl = "", int licenseCount = 0) => new
     {
         p.Id,
         p.BrandId,
+        brandName,
+        brandLogoUrl,
         p.Slug,
         p.DisplayName,
         p.AppKey,
@@ -308,6 +488,7 @@ public static class CatalogApi
         downloadUrl = p.DownloadUrl ?? "",
         releaseNotes = p.ReleaseNotes ?? "",
         p.IsActive,
+        licenseCount,
         createdAt = p.CreatedAt.ToString("o")
     };
 
@@ -333,6 +514,98 @@ public static class CatalogApi
 
     private static bool IsSlug(string s) =>
         s.Length is >= 2 and <= 64 && s.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '-');
+
+    private static string NewHmacSecret()
+    {
+        Span<byte> bytes = stackalloc byte[32];
+        RandomNumberGenerator.Fill(bytes);
+        return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    private static bool TryBrandContact(
+        JsonElement body,
+        out string supportEmail,
+        out string websiteUrl,
+        out string logoUrl,
+        out IResult? error) =>
+        TryBrandContact(body, requirePresent: true, out supportEmail, out websiteUrl, out logoUrl, out error);
+
+    private static bool TryBrandContact(
+        JsonElement body,
+        bool requirePresent,
+        out string supportEmail,
+        out string websiteUrl,
+        out string logoUrl,
+        out IResult? error)
+    {
+        supportEmail = "";
+        websiteUrl = "";
+        logoUrl = "";
+        error = null;
+
+        if (requirePresent || body.TryGetProperty("supportEmail", out _))
+        {
+            var raw = Str(body, "supportEmail");
+            if (raw.Length == 0) supportEmail = "";
+            else if (raw.Length < 6)
+            {
+                error = Fail(400, "supportEmail too short");
+                return false;
+            }
+            else if (!EmailAddress.TryNormalize(raw, out supportEmail))
+            {
+                error = Fail(400, raw.Length > 256 ? "supportEmail too long" : "invalid supportEmail");
+                return false;
+            }
+        }
+
+        if (requirePresent || body.TryGetProperty("websiteUrl", out _))
+        {
+            websiteUrl = Str(body, "websiteUrl");
+            if (!TryHttpUrl(websiteUrl, "websiteUrl", out error))
+                return false;
+        }
+
+        if (requirePresent || body.TryGetProperty("logoUrl", out _))
+        {
+            logoUrl = Str(body, "logoUrl");
+            if (!TryHttpUrl(logoUrl, "logoUrl", out error))
+                return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryHttpUrl(string s, string field, out IResult? error)
+    {
+        error = null;
+        if (string.IsNullOrEmpty(s)) return true;
+        if (s.Length < 10)
+        {
+            error = Fail(400, $"{field} too short");
+            return false;
+        }
+        if (s.Length > 512)
+        {
+            error = Fail(400, $"{field} too long");
+            return false;
+        }
+        if (!IsHttpUrl(s))
+        {
+            error = Fail(400, $"{field} must be an http(s) URL");
+            return false;
+        }
+        return true;
+    }
+
+    private static bool IsHttpUrl(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return true;
+        if (s.Length > 512) return false;
+        return Uri.TryCreate(s, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            && !string.IsNullOrEmpty(uri.Host);
+    }
 
     private static string? NullIfEmpty(string s) => string.IsNullOrWhiteSpace(s) ? null : s;
 

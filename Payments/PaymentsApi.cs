@@ -179,13 +179,19 @@ public static class PaymentsApi
         var g = await Require(ctx, db, Permissions.PaymentRead, ct);
         if (g.Result is not null) return g.Result;
 
-        var q = db.Orders.AsNoTracking().AsQueryable();
+        var q = db.Orders.AsNoTracking().Include(o => o.Customer).AsQueryable();
         var status = ctx.Request.Query["status"].ToString().Trim().ToLowerInvariant();
         if (status.Length > 0) q = q.Where(o => o.Status == status);
         if (int.TryParse(ctx.Request.Query["productId"], out var pid)) q = q.Where(o => o.ProductId == pid);
         var search = ctx.Request.Query["q"].ToString().Trim();
         if (search.Length > 0)
-            q = q.Where(o => o.PublicId == search || o.IdempotencyKey == search);
+        {
+            var s = search.ToLowerInvariant();
+            q = q.Where(o =>
+                o.PublicId.ToLower().Contains(s) ||
+                o.IdempotencyKey.ToLower().Contains(s) ||
+                (o.Customer != null && o.Customer.Email.ToLower().Contains(s)));
+        }
 
         var limit = int.TryParse(ctx.Request.Query["limit"], out var lim) ? Math.Clamp(lim, 1, 1000) : 100;
         var rows = await q.OrderByDescending(o => o.Id).Take(limit).ToListAsync(ct);
@@ -328,7 +334,8 @@ public static class PaymentsApi
 
     private static object AdminSummary(Order o) => new
     {
-        o.Id, o.PublicId, o.CustomerId, o.ProductId, o.PlanType, amount = o.Amount, o.Currency,
+        o.Id, o.PublicId, o.CustomerId, customerEmail = o.Customer?.Email ?? "",
+        o.ProductId, o.PlanType, amount = o.Amount, o.Currency,
         o.Gateway, o.Status, o.LicenseId,
         paidAt = o.PaidAt?.ToString("o"),
         createdAt = o.CreatedAt.ToString("o")

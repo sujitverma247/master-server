@@ -76,7 +76,8 @@ public static class AnalyticsWindow
             string label;
             if (step == TimeSpan.Zero)
             {
-                next = cursor.AddMonths(1);
+                var monthStart = new DateTime(cursor.Year, cursor.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+                next = monthStart.AddMonths(1);
                 label = cursor.ToString("yyyy-MM", CultureInfo.InvariantCulture);
             }
             else
@@ -85,6 +86,7 @@ public static class AnalyticsWindow
                 label = cursor.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
             }
             if (next > toExclusive) next = toExclusive;
+            if (next <= cursor) break;
             list.Add(new SeriesBucket(cursor, next, label));
             cursor = next;
         }
