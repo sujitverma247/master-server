@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -5,8 +6,8 @@ using System.Text.Json;
 namespace MasterServer.Payments;
 
 /// <summary>
-/// Local/test gateway. Checkout is completed by posting a signed webhook.
-/// Secret comes from GATEWAY_DEV_SECRET (deployment env), never from source.
+/// Local/test gateway. Checkout is optional; buy-link style payloads omit publicId
+/// and send email + externalPlanId + amount. Secret comes from GATEWAY_DEV_SECRET.
 /// </summary>
 public sealed class DevGateway : IPaymentGateway
 {
@@ -50,14 +51,35 @@ public sealed class DevGateway : IPaymentGateway
         var eventType = Str(root, "eventType");
         var publicId = Str(root, "publicId");
         var status = Str(root, "status");
-        var externalPaymentId = Str(root, "externalPaymentId");
-        if (eventType.Length == 0 || publicId.Length == 0 || status.Length == 0) return false;
+        if (eventType.Length == 0 || status.Length == 0) return false;
 
         if (!SignatureMatches(_secret, eventId, timestamp, nonce, eventType, publicId, status, signature))
             return false;
 
-        envelope = new WebhookEnvelope(eventId, eventType, publicId, status,
-            externalPaymentId.Length > 0 ? externalPaymentId : null);
+        var externalPaymentId = StrAny(root, "externalPaymentId", "paymentId");
+        var externalPlanId = StrAny(root, "externalPlanId", "gatewayPlanId", "productId");
+        var email = StrAny(root, "email", "customerEmail");
+        var currency = Str(root, "currency");
+        var name = StrAny(root, "customerName", "name");
+        var externalCustomerId = Str(root, "externalCustomerId");
+        var externalSubscriptionId = StrAny(root, "externalSubscriptionId", "subscriptionId");
+
+        envelope = new WebhookEnvelope(
+            eventId,
+            eventType,
+            publicId,
+            status,
+            externalPaymentId.Length > 0 ? externalPaymentId : null,
+            ExternalPlanId: externalPlanId.Length > 0 ? externalPlanId : null,
+            Email: email.Length > 0 ? email : null,
+            Amount: Dec(root, "amount"),
+            Currency: currency.Length > 0 ? currency : null,
+            CustomerName: name.Length > 0 ? name : null,
+            ExternalCustomerId: externalCustomerId.Length > 0 ? externalCustomerId : null,
+            ExternalSubscriptionId: externalSubscriptionId.Length > 0 ? externalSubscriptionId : null,
+            PaidAt: Dt(root, "paidAt"),
+            ExpiresAt: Dt(root, "expiresAt"),
+            IsSubscription: Flag(root, "isSubscription"));
         return true;
     }
 
@@ -78,7 +100,42 @@ public sealed class DevGateway : IPaymentGateway
         return a.Length == b.Length && CryptographicOperations.FixedTimeEquals(a, b);
     }
 
+    private static string StrAny(JsonElement root, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            var value = Str(root, name);
+            if (value.Length > 0) return value;
+        }
+        return "";
+    }
+
     private static string Str(JsonElement body, string name) =>
         body.ValueKind == JsonValueKind.Object && body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
             ? (v.GetString() ?? "").Trim() : "";
+
+    private static decimal? Dec(JsonElement body, string name)
+    {
+        if (body.ValueKind != JsonValueKind.Object || !body.TryGetProperty(name, out var value))
+            return null;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetDecimal(out var number))
+            return number;
+        if (value.ValueKind == JsonValueKind.String &&
+            decimal.TryParse(value.GetString(), NumberStyles.Number, CultureInfo.InvariantCulture, out number))
+            return number;
+        return null;
+    }
+
+    private static DateTime? Dt(JsonElement body, string name)
+    {
+        var text = Str(body, name);
+        if (text.Length == 0) return null;
+        if (!DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var dt))
+            return null;
+        if (dt.Kind == DateTimeKind.Unspecified) return DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+        return dt.ToUniversalTime();
+    }
+
+    private static bool Flag(JsonElement body, string name) =>
+        body.ValueKind == JsonValueKind.Object && body.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.True;
 }

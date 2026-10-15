@@ -10,12 +10,18 @@ namespace MasterServer.Payments;
 public static class OrderFulfillment
 {
     public static async Task<string?> ApplyAsync(AppDb db, Order order, string status,
-        string? externalPaymentId, CancellationToken ct)
+        string? externalPaymentId, CancellationToken ct,
+        DateTime? paidAt = null,
+        DateTime? expiresAt = null,
+        bool isSubscription = false,
+        string? externalSubscriptionId = null)
     {
         status = status.Trim().ToLowerInvariant();
+        if (!string.IsNullOrEmpty(externalSubscriptionId) && string.IsNullOrEmpty(order.ExternalSubscriptionId))
+            order.ExternalSubscriptionId = externalSubscriptionId;
         return status switch
         {
-            OrderStatuses.Paid => await PayAsync(db, order, externalPaymentId, ct),
+            OrderStatuses.Paid => await PayAsync(db, order, externalPaymentId, paidAt, expiresAt, isSubscription, ct),
             OrderStatuses.Failed => Fail(order, OrderStatuses.Failed),
             OrderStatuses.Cancelled => Fail(order, OrderStatuses.Cancelled),
             OrderStatuses.Refunded => await RefundAsync(db, order, ct),
@@ -23,7 +29,8 @@ public static class OrderFulfillment
         };
     }
 
-    private static async Task<string?> PayAsync(AppDb db, Order order, string? externalPaymentId, CancellationToken ct)
+    private static async Task<string?> PayAsync(AppDb db, Order order, string? externalPaymentId,
+        DateTime? paidAt, DateTime? expiresAt, bool isSubscription, CancellationToken ct)
     {
         if (order.Status == OrderStatuses.Refunded) return "order refunded";
         if (order.Status == OrderStatuses.Paid && order.LicenseId is not null)
@@ -44,7 +51,9 @@ public static class OrderFulfillment
         do { key = KeyGenerator.Generate(product.KeyPrefix); }
         while (await db.Licenses.AnyAsync(l => l.Key == key, ct));
 
-        var purchasedAt = DateTime.UtcNow;
+        var purchasedAt = ToUtc(paidAt) ?? DateTime.UtcNow;
+        var subscription = isSubscription || !string.IsNullOrEmpty(order.ExternalSubscriptionId);
+        var licenseExpires = ToUtc(expiresAt) ?? await LicenseTerm.FromPurchaseAsync(db, order.PlanType, purchasedAt, ct);
         var license = new License
         {
             Key = key,
@@ -52,13 +61,15 @@ public static class OrderFulfillment
             PlanType = order.PlanType,
             MaxMachines = maxMachines,
             CreatedAt = purchasedAt,
-            ExpiresAt = await LicenseTerm.FromPurchaseAsync(db, order.PlanType, purchasedAt, ct),
+            ExpiresAt = licenseExpires,
             IsActive = true,
             IsRevoked = false,
+            IsSubscription = subscription,
             CustomerId = customer.Id,
             CustomerEmail = customer.Email,
             Source = order.Gateway,
             ExternalPaymentId = externalPaymentId,
+            ExternalSubscriptionId = order.ExternalSubscriptionId,
             ExternalCustomerId = customer.ExternalCustomerId
         };
         db.Licenses.Add(license);
@@ -100,5 +111,12 @@ public static class OrderFulfillment
         await MailOutbox.EnqueueOrderRefundedAsync(db, order, license, ct);
         await InvoiceIssuer.VoidForOrderAsync(db, order.Id, ct);
         return null;
+    }
+
+    private static DateTime? ToUtc(DateTime? value)
+    {
+        if (value is not DateTime dt) return null;
+        if (dt.Kind == DateTimeKind.Unspecified) return DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+        return dt.ToUniversalTime();
     }
 }

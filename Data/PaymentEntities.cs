@@ -1,6 +1,6 @@
 namespace MasterServer.Data;
 
-/// <summary>A checkout/order. Amount is copied from the Plan row; the client cannot set the price.</summary>
+/// <summary>A checkout/order. Amount is the gateway charge (webhook) or a plan snapshot for manual/dev checkout.</summary>
 public class Order
 {
     public int Id { get; set; }

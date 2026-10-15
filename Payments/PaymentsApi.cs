@@ -30,7 +30,8 @@ public static class PaymentsApi
         app.MapDelete("/admin/gateway-plans/{id:int}", (int id, HttpContext c, AppDb db, CancellationToken ct) => DeleteMap(id, c, db, ct));
     }
 
-    // ---------- Public checkout ----------
+    // ---------- Public checkout (optional Dev/manual start) ----------
+    // Product websites use the gateway buy link. Paid/refunded rows arrive via webhook.
 
     private static async Task<IResult> Create(HttpContext ctx, AppDb db, GatewayRegistry gateways, CancellationToken ct)
     {
@@ -139,18 +140,16 @@ public static class PaymentsApi
             return Fail(401, "unauthorized");
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
-        var order = await db.Orders.FirstOrDefaultAsync(o => o.PublicId == envelope.PublicId && o.Gateway == gateway.Name, ct);
-        if (order is null) return Fail(404, "order not found");
-
-        db.PaymentEvents.Add(new PaymentEvent
+        var paymentEvent = new PaymentEvent
         {
             Gateway = gateway.Name,
             ExternalEventId = envelope.EventId,
             EventType = envelope.EventType,
-            OrderId = order.Id,
+            OrderId = null,
             PayloadSha256 = IdempotencyKey.Sha256Hex(raw),
             CreatedAt = DateTime.UtcNow
-        });
+        };
+        db.PaymentEvents.Add(paymentEvent);
         try
         {
             await db.SaveChangesAsync(ct);
@@ -161,7 +160,23 @@ public static class PaymentsApi
             return Json(200, new { received = true, duplicate = true });
         }
 
-        var error = await OrderFulfillment.ApplyAsync(db, order, envelope.Status, envelope.ExternalPaymentId, ct);
+        var resolved = await WebhookOrder.ResolveOrCreateAsync(db, gateway.Name, envelope, ct);
+        if (resolved.Error is not null || resolved.Order is null)
+        {
+            await tx.RollbackAsync(ct);
+            return Fail(resolved.Error == "order not found" ? 404 : 422, resolved.Error ?? "order not found");
+        }
+
+        var order = resolved.Order;
+        paymentEvent.OrderId = order.Id;
+        WebhookOrder.StampCharge(order, envelope);
+
+        var error = await OrderFulfillment.ApplyAsync(
+            db, order, envelope.Status, envelope.ExternalPaymentId, ct,
+            paidAt: envelope.PaidAt,
+            expiresAt: envelope.ExpiresAt,
+            isSubscription: envelope.IsSubscription,
+            externalSubscriptionId: envelope.ExternalSubscriptionId);
         if (error is not null)
         {
             await tx.RollbackAsync(ct);
@@ -182,23 +197,104 @@ public static class PaymentsApi
         var g = await Require(ctx, db, Permissions.PaymentRead, ct);
         if (g.Result is not null) return g.Result;
 
-        var q = db.Orders.AsNoTracking().Include(o => o.Customer).AsQueryable();
+        var q = db.Orders.AsNoTracking().AsQueryable();
         var status = ctx.Request.Query["status"].ToString().Trim().ToLowerInvariant();
-        if (status.Length > 0) q = q.Where(o => o.Status == status);
-        if (int.TryParse(ctx.Request.Query["productId"], out var pid)) q = q.Where(o => o.ProductId == pid);
+        if (status is { Length: > 0 } && status != "all") q = q.Where(o => o.Status == status);
+        if (int.TryParse(ctx.Request.Query["productId"], out var pid) && pid > 0)
+            q = q.Where(o => o.ProductId == pid);
+        var gateway = ctx.Request.Query["gateway"].ToString().Trim().ToLowerInvariant();
+        if (gateway.Length > 0) q = q.Where(o => o.Gateway == gateway);
+
         var search = ctx.Request.Query["q"].ToString().Trim();
         if (search.Length > 0)
         {
             var s = search.ToLowerInvariant();
             q = q.Where(o =>
-                o.PublicId.ToLower().Contains(s) ||
-                o.IdempotencyKey.ToLower().Contains(s) ||
-                (o.Customer != null && o.Customer.Email.ToLower().Contains(s)));
+                o.PublicId.ToLower().Contains(s)
+                || o.IdempotencyKey.ToLower().Contains(s)
+                || o.PlanType.ToLower().Contains(s)
+                || o.Gateway.ToLower().Contains(s)
+                || (o.ExternalPaymentId != null && o.ExternalPaymentId.ToLower().Contains(s))
+                || o.Customer.Email.Contains(s)
+                || o.Customer.DisplayName.ToLower().Contains(s)
+                || o.Customer.Phone.Contains(s));
         }
 
-        var limit = int.TryParse(ctx.Request.Query["limit"], out var lim) ? Math.Clamp(lim, 1, 1000) : 100;
-        var rows = await q.OrderByDescending(o => o.Id).Take(limit).ToListAsync(ct);
-        return Json(200, new { orders = rows.Select(AdminSummary) });
+        if (DateOnly.TryParse(ctx.Request.Query["from"], out var fromDay))
+        {
+            var fromUtc = fromDay.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(o => o.CreatedAt >= fromUtc);
+        }
+        if (DateOnly.TryParse(ctx.Request.Query["to"], out var toDay))
+        {
+            var toExclusive = toDay.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(o => o.CreatedAt < toExclusive);
+        }
+
+        var projected = q.Select(o => new
+        {
+            Order = o,
+            CustomerEmail = o.Customer.Email,
+            CustomerName = o.Customer.DisplayName,
+            CustomerPhone = o.Customer.Phone,
+            ProductName = db.Products.Where(p => p.Id == o.ProductId).Select(p => p.DisplayName).FirstOrDefault() ?? "",
+            LicenseKey = o.LicenseId == null
+                ? null
+                : db.Licenses.Where(l => l.Id == o.LicenseId).Select(l => l.Key).FirstOrDefault()
+        });
+
+        var sort = ctx.Request.Query["sort"].ToString().Trim().ToLowerInvariant();
+        var asc = ctx.Request.Query["dir"].ToString().Trim().Equals("asc", StringComparison.OrdinalIgnoreCase);
+        projected = sort switch
+        {
+            "publicid" or "order" => asc
+                ? projected.OrderBy(x => x.Order.PublicId)
+                : projected.OrderByDescending(x => x.Order.PublicId),
+            "email" or "customer" => asc
+                ? projected.OrderBy(x => x.CustomerEmail)
+                : projected.OrderByDescending(x => x.CustomerEmail),
+            "product" => asc ? projected.OrderBy(x => x.ProductName) : projected.OrderByDescending(x => x.ProductName),
+            "plan" => asc ? projected.OrderBy(x => x.Order.PlanType) : projected.OrderByDescending(x => x.Order.PlanType),
+            "amount" => asc ? projected.OrderBy(x => x.Order.Amount) : projected.OrderByDescending(x => x.Order.Amount),
+            "gateway" => asc ? projected.OrderBy(x => x.Order.Gateway) : projected.OrderByDescending(x => x.Order.Gateway),
+            "status" => asc ? projected.OrderBy(x => x.Order.Status) : projected.OrderByDescending(x => x.Order.Status),
+            "paidat" => asc ? projected.OrderBy(x => x.Order.PaidAt) : projected.OrderByDescending(x => x.Order.PaidAt),
+            _ => asc ? projected.OrderBy(x => x.Order.CreatedAt) : projected.OrderByDescending(x => x.Order.CreatedAt)
+        };
+
+        var total = await projected.CountAsync(ct);
+        var limit = CatalogPaging.NormalizeLimit(ctx.Request.Query["limit"].ToString());
+        var page = CatalogPaging.ClampPage(CatalogPaging.NormalizePage(ctx.Request.Query["page"].ToString()), total, limit);
+        var rows = await projected.Skip((page - 1) * limit).Take(limit).ToListAsync(ct);
+
+        var allCount = await db.Orders.CountAsync(ct);
+        var paidCount = await db.Orders.CountAsync(o => o.Status == OrderStatuses.Paid, ct);
+        var pendingCount = await db.Orders.CountAsync(o => o.Status == OrderStatuses.Pending, ct);
+        var refundedCount = await db.Orders.CountAsync(o => o.Status == OrderStatuses.Refunded, ct);
+        var gateways = await db.Orders.AsNoTracking()
+            .Where(o => o.Gateway != "")
+            .Select(o => o.Gateway)
+            .Distinct()
+            .OrderBy(n => n)
+            .ToListAsync(ct);
+
+        return Json(200, new
+        {
+            orders = rows.Select(x => AdminSummary(
+                x.Order, x.CustomerEmail, x.CustomerName, x.CustomerPhone, x.ProductName, x.LicenseKey)),
+            total,
+            page,
+            limit,
+            counts = new
+            {
+                total = allCount,
+                paid = paidCount,
+                pending = pendingCount,
+                refunded = refundedCount,
+                other = allCount - paidCount - pendingCount - refundedCount
+            },
+            gateways
+        });
     }
 
     private static async Task<IResult> Get(int id, HttpContext ctx, AppDb db, CancellationToken ct)
@@ -211,7 +307,11 @@ public static class PaymentsApi
             .Include(o => o.Customer)
             .FirstOrDefaultAsync(o => o.Id == id, ct);
         if (order is null) return Fail(404, "order not found");
-        return Json(200, new { order = AdminDetail(order) });
+        var productName = await db.Products.AsNoTracking()
+            .Where(p => p.Id == order.ProductId)
+            .Select(p => p.DisplayName)
+            .FirstOrDefaultAsync(ct) ?? "";
+        return Json(200, new { order = AdminDetail(order, productName) });
     }
 
     private static async Task<IResult> MarkPaid(HttpContext ctx, AppDb db, IMailSender mail, CancellationToken ct)
@@ -243,7 +343,12 @@ public static class PaymentsApi
         await db.SaveChangesAsync(ct);
         await MailDispatch.DrainAsync(db, mail, 20, ct);
         await db.Entry(order).Reference(o => o.License).LoadAsync(ct);
-        return Json(200, new { order = AdminDetail(order) });
+        await db.Entry(order).Reference(o => o.Customer).LoadAsync(ct);
+        var productName = await db.Products.AsNoTracking()
+            .Where(p => p.Id == order.ProductId)
+            .Select(p => p.DisplayName)
+            .FirstOrDefaultAsync(ct) ?? "";
+        return Json(200, new { order = AdminDetail(order, productName) });
     }
 
     private static async Task<IResult> Refund(HttpContext ctx, AppDb db, IMailSender mail, CancellationToken ct)
@@ -443,10 +548,10 @@ public static class PaymentsApi
     private static async Task<Order?> FindOrder(AppDb db, JsonElement body, CancellationToken ct)
     {
         if (TryInt(body, "id", out var id))
-            return await db.Orders.Include(o => o.License).FirstOrDefaultAsync(o => o.Id == id, ct);
+            return await db.Orders.Include(o => o.License).Include(o => o.Customer).FirstOrDefaultAsync(o => o.Id == id, ct);
         var publicId = Str(body, "publicId");
         if (publicId.Length > 0)
-            return await db.Orders.Include(o => o.License).FirstOrDefaultAsync(o => o.PublicId == publicId, ct);
+            return await db.Orders.Include(o => o.License).Include(o => o.Customer).FirstOrDefaultAsync(o => o.PublicId == publicId, ct);
         return null;
     }
 
@@ -464,25 +569,40 @@ public static class PaymentsApi
         createdAt = o.CreatedAt.ToString("o")
     };
 
-    private static object AdminSummary(Order o) => new
+    private static object AdminSummary(
+        Order o,
+        string? customerEmail = null,
+        string? customerName = null,
+        string? customerPhone = null,
+        string? productName = null,
+        string? licenseKey = null) => new
     {
-        o.Id, o.PublicId, o.CustomerId, customerEmail = o.Customer?.Email ?? "",
-        o.ProductId, o.PlanType, amount = o.Amount, o.Currency,
+        o.Id, o.PublicId, o.CustomerId,
+        customerEmail = customerEmail ?? o.Customer?.Email ?? "",
+        customerName = customerName ?? o.Customer?.DisplayName ?? "",
+        customerPhone = customerPhone ?? o.Customer?.Phone ?? "",
+        o.ProductId, productName = productName ?? "",
+        o.PlanType, amount = o.Amount, o.Currency,
         o.Gateway, o.Status, o.LicenseId,
+        licenseKey = licenseKey ?? o.License?.Key,
         paidAt = o.PaidAt?.ToString("o"),
         createdAt = o.CreatedAt.ToString("o")
     };
 
-    private static object AdminDetail(Order o) => new
+    private static object AdminDetail(Order o, string productName = "") => new
     {
         o.Id, o.PublicId, o.IdempotencyKey, o.CustomerId,
-        customerEmail = o.Customer?.Email,
-        o.ProductId, o.PlanType, amount = o.Amount, o.Currency,
+        customerEmail = o.Customer?.Email ?? "",
+        customerName = o.Customer?.DisplayName ?? "",
+        customerPhone = o.Customer?.Phone ?? "",
+        o.ProductId, productName,
+        o.PlanType, amount = o.Amount, o.Currency,
         o.Gateway, o.Status, o.LicenseId,
         licenseKey = o.License?.Key,
-        o.ExternalPaymentId, o.ExternalCheckoutId, o.RefundPolicyId,
+        o.ExternalPaymentId, o.ExternalCheckoutId, o.CheckoutUrl, o.RefundPolicyId,
         paidAt = o.PaidAt?.ToString("o"),
-        createdAt = o.CreatedAt.ToString("o")
+        createdAt = o.CreatedAt.ToString("o"),
+        updatedAt = o.UpdatedAt.ToString("o")
     };
 
     private readonly record struct MappingInput(
