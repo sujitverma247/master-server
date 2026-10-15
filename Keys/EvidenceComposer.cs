@@ -1,3 +1,4 @@
+using MasterServer.Catalog;
 using MasterServer.Data;
 using MasterServer.Licensing;
 using Microsoft.EntityFrameworkCore;
@@ -6,8 +7,6 @@ namespace MasterServer.Keys;
 
 public static class EvidenceComposer
 {
-    private static readonly HttpClient Http = CreateClient();
-    private const int MaxLogoBytes = 512 * 1024;
 
     public static async Task<EvidenceDocument> BuildAsync(AppDb db, License license, string generatedBy, CancellationToken ct)
     {
@@ -75,7 +74,7 @@ public static class EvidenceComposer
 
         var purchasedAt = order?.PaidAt ?? order?.CreatedAt ?? license.CreatedAt;
         var issuerName = FirstNonEmpty(brand?.Name, product?.DisplayName, "License");
-        var logo = await TryLogoAsync(brand?.LogoUrl, ct);
+        var logo = await BrandLogo.TryFetchAsync(brand?.LogoUrl, ct);
         var now = DateTime.UtcNow;
 
         return new EvidenceDocument
@@ -119,43 +118,8 @@ public static class EvidenceComposer
         };
     }
 
-    public static async Task<byte[]?> TryLogoAsync(string? logoUrl, CancellationToken ct)
-    {
-        if (string.IsNullOrWhiteSpace(logoUrl)) return null;
-        if (!Uri.TryCreate(logoUrl.Trim(), UriKind.Absolute, out var uri)) return null;
-        if (uri.Scheme != Uri.UriSchemeHttps && uri.Scheme != Uri.UriSchemeHttp) return null;
-        try
-        {
-            using var req = new HttpRequestMessage(HttpMethod.Get, uri);
-            using var res = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
-            if (!res.IsSuccessStatusCode) return null;
-            var type = res.Content.Headers.ContentType?.MediaType ?? "";
-            if (type.Length > 0 && !type.StartsWith("image/", StringComparison.OrdinalIgnoreCase)) return null;
-            var len = res.Content.Headers.ContentLength;
-            if (len > MaxLogoBytes) return null;
-            await using var stream = await res.Content.ReadAsStreamAsync(ct);
-            using var ms = new MemoryStream();
-            var buffer = new byte[8192];
-            int read;
-            while ((read = await stream.ReadAsync(buffer, ct)) > 0)
-            {
-                if (ms.Length + read > MaxLogoBytes) return null;
-                await ms.WriteAsync(buffer.AsMemory(0, read), ct);
-            }
-            return ms.Length == 0 ? null : ms.ToArray();
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-    }
-
-    private static HttpClient CreateClient()
-    {
-        var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("MasterServer-Evidence/1.0");
-        return http;
-    }
+    public static Task<byte[]?> TryLogoAsync(string? logoUrl, CancellationToken ct) =>
+        BrandLogo.TryFetchAsync(logoUrl, ct);
 
     private static string Status(License l, DateTime now)
     {

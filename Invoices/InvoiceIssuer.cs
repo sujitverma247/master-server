@@ -1,3 +1,4 @@
+using MasterServer.Catalog;
 using MasterServer.Data;
 using MasterServer.Mail;
 using Microsoft.EntityFrameworkCore;
@@ -26,18 +27,25 @@ public static class InvoiceIssuer
 
         var issuedAt = DateTime.UtcNow;
         var support = brand?.SupportEmail is { Length: > 0 } se ? se : MailSenderFactory.DefaultFromEmail();
-        var snapshotNames = (
+        var plan = await db.Plans.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.IsActive && p.Code.ToLower() == order.PlanType.ToLower(), ct);
+        var logo = await BrandLogo.TryFetchAsync(brand?.LogoUrl, ct);
+        var extras = (
             CustomerEmail: customer.Email,
             CustomerName: customer.DisplayName.Length > 0 ? customer.DisplayName : customer.Email,
+            CustomerPhone: customer.Phone,
             ProductName: product?.DisplayName is { Length: > 0 } pn ? pn : (product?.Slug ?? "product"),
             BrandName: brand?.Name is { Length: > 0 } bn ? bn : "Seller",
-            SupportEmail: support
+            SupportEmail: support,
+            WebsiteUrl: brand?.WebsiteUrl ?? "",
+            PlanLabel: InvoicePdf.PlanLabel(order.PlanType, plan?.DisplayName),
+            LogoBytes: logo
         );
 
         for (var attempt = 0; attempt < 5; attempt++)
         {
             var number = await NextNumberAsync(db, issuedAt, ct);
-            var invoice = Build(order, number, issuedAt, policyVersion, snapshotNames);
+            var invoice = Build(order, number, issuedAt, policyVersion, extras);
             db.Invoices.Add(invoice);
             try
             {
@@ -65,7 +73,8 @@ public static class InvoiceIssuer
     }
 
     private static Invoice Build(Order order, string number, DateTime issuedAt, string policyVersion,
-        (string CustomerEmail, string CustomerName, string ProductName, string BrandName, string SupportEmail) names)
+        (string CustomerEmail, string CustomerName, string CustomerPhone, string ProductName, string BrandName,
+            string SupportEmail, string WebsiteUrl, string PlanLabel, byte[]? LogoBytes) names)
     {
         var invoice = new Invoice
         {
@@ -87,7 +96,16 @@ public static class InvoiceIssuer
             Status = InvoiceStatuses.Issued,
             IssuedAt = issuedAt
         };
-        var pdf = InvoicePdf.Render(InvoicePdf.FromEntity(invoice));
+        var snapshot = InvoicePdf.FromEntity(invoice) with
+        {
+            WebsiteUrl = names.WebsiteUrl,
+            CustomerPhone = names.CustomerPhone,
+            PlanLabel = names.PlanLabel,
+            PaidAt = order.PaidAt ?? issuedAt,
+            ExternalPaymentId = order.ExternalPaymentId,
+            LogoBytes = names.LogoBytes
+        };
+        var pdf = InvoicePdf.Render(snapshot);
         invoice.PdfBytes = pdf;
         invoice.PdfSha256 = InvoicePdf.Sha256Hex(pdf);
         return invoice;

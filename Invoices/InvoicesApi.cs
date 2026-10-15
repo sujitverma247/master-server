@@ -1,5 +1,6 @@
 using System.Text.Json;
 using MasterServer.Admin;
+using MasterServer.Catalog;
 using MasterServer.Customers;
 using MasterServer.Data;
 using Microsoft.EntityFrameworkCore;
@@ -38,7 +39,7 @@ public static class InvoicesApi
             return Fail(error.status, error.message);
         var invoice = await FindPublicAsync(db, email, publicId, orderPublicId, ct);
         if (invoice is null) return Fail(404, "invoice not found");
-        return PdfFile(invoice);
+        return await PdfFileAsync(db, invoice, ct);
     }
 
     private static async Task<IResult> PublicEvidence(HttpContext ctx, AppDb db, CancellationToken ct)
@@ -64,15 +65,89 @@ public static class InvoicesApi
         var q = db.Invoices.AsNoTracking().AsQueryable();
         var status = ctx.Request.Query["status"].ToString().Trim().ToLowerInvariant();
         if (status is InvoiceStatuses.Issued or InvoiceStatuses.Void) q = q.Where(i => i.Status == status);
-        if (int.TryParse(ctx.Request.Query["customerId"], out var cid)) q = q.Where(i => i.CustomerId == cid);
-        if (int.TryParse(ctx.Request.Query["orderId"], out var oid)) q = q.Where(i => i.OrderId == oid);
+        if (int.TryParse(ctx.Request.Query["customerId"], out var cid) && cid > 0)
+            q = q.Where(i => i.CustomerId == cid);
+        if (int.TryParse(ctx.Request.Query["orderId"], out var oid) && oid > 0)
+            q = q.Where(i => i.OrderId == oid);
+        var gateway = ctx.Request.Query["gateway"].ToString().Trim().ToLowerInvariant();
+        if (gateway.Length > 0) q = q.Where(i => i.Gateway == gateway);
+
         var search = ctx.Request.Query["q"].ToString().Trim();
         if (search.Length > 0)
-            q = q.Where(i => i.PublicId == search || i.Number == search || i.OrderPublicId == search);
+        {
+            var s = search.ToLowerInvariant();
+            q = q.Where(i =>
+                i.Number.ToLower().Contains(s)
+                || i.PublicId.ToLower().Contains(s)
+                || i.OrderPublicId.ToLower().Contains(s)
+                || i.CustomerEmail.Contains(s)
+                || i.CustomerName.ToLower().Contains(s)
+                || i.ProductName.ToLower().Contains(s)
+                || i.Gateway.ToLower().Contains(s)
+                || i.PdfSha256.ToLower().Contains(s));
+        }
 
-        var limit = int.TryParse(ctx.Request.Query["limit"], out var lim) ? Math.Clamp(lim, 1, 1000) : 100;
-        var rows = await q.OrderByDescending(i => i.Id).Take(limit).ToListAsync(ct);
-        return Json(200, new { invoices = rows.Select(AdminSummary) });
+        if (DateOnly.TryParse(ctx.Request.Query["from"], out var fromDay))
+        {
+            var fromUtc = fromDay.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(i => i.IssuedAt >= fromUtc);
+        }
+        if (DateOnly.TryParse(ctx.Request.Query["to"], out var toDay))
+        {
+            var toExclusive = toDay.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(i => i.IssuedAt < toExclusive);
+        }
+
+        var projected = q.Select(i => new
+        {
+            i.Id, i.PublicId, i.Number, i.OrderId, i.CustomerId, i.CustomerEmail, i.CustomerName,
+            i.ProductName, i.Status, i.PlanType, i.Amount, i.Currency, i.OrderPublicId, i.Gateway,
+            i.PdfSha256, i.IssuedAt, i.VoidedAt
+        });
+
+        var sort = ctx.Request.Query["sort"].ToString().Trim().ToLowerInvariant();
+        var asc = ctx.Request.Query["dir"].ToString().Trim().Equals("asc", StringComparison.OrdinalIgnoreCase);
+        projected = sort switch
+        {
+            "number" => asc ? projected.OrderBy(x => x.Number) : projected.OrderByDescending(x => x.Number),
+            "email" or "customer" => asc
+                ? projected.OrderBy(x => x.CustomerEmail)
+                : projected.OrderByDescending(x => x.CustomerEmail),
+            "product" => asc ? projected.OrderBy(x => x.ProductName) : projected.OrderByDescending(x => x.ProductName),
+            "amount" => asc ? projected.OrderBy(x => x.Amount) : projected.OrderByDescending(x => x.Amount),
+            "gateway" => asc ? projected.OrderBy(x => x.Gateway) : projected.OrderByDescending(x => x.Gateway),
+            "status" => asc ? projected.OrderBy(x => x.Status) : projected.OrderByDescending(x => x.Status),
+            "voidedat" => asc ? projected.OrderBy(x => x.VoidedAt) : projected.OrderByDescending(x => x.VoidedAt),
+            _ => asc ? projected.OrderBy(x => x.IssuedAt) : projected.OrderByDescending(x => x.IssuedAt)
+        };
+
+        var total = await projected.CountAsync(ct);
+        var limit = CatalogPaging.NormalizeLimit(ctx.Request.Query["limit"].ToString());
+        var page = CatalogPaging.ClampPage(CatalogPaging.NormalizePage(ctx.Request.Query["page"].ToString()), total, limit);
+        var rows = await projected.Skip((page - 1) * limit).Take(limit).ToListAsync(ct);
+
+        var allCount = await db.Invoices.CountAsync(ct);
+        var issuedCount = await db.Invoices.CountAsync(i => i.Status == InvoiceStatuses.Issued, ct);
+        var voidCount = await db.Invoices.CountAsync(i => i.Status == InvoiceStatuses.Void, ct);
+        var gateways = await db.Invoices.AsNoTracking()
+            .Where(i => i.Gateway != "")
+            .Select(i => i.Gateway)
+            .Distinct()
+            .OrderBy(n => n)
+            .ToListAsync(ct);
+
+        return Json(200, new
+        {
+            invoices = rows.Select(x => AdminSummary(
+                x.Id, x.PublicId, x.Number, x.OrderId, x.CustomerId, x.CustomerEmail, x.CustomerName,
+                x.ProductName, x.Status, x.PlanType, x.Amount, x.Currency, x.OrderPublicId, x.Gateway,
+                x.PdfSha256, x.IssuedAt, x.VoidedAt)),
+            total,
+            page,
+            limit,
+            counts = new { total = allCount, issued = issuedCount, voided = voidCount },
+            gateways
+        });
     }
 
     private static async Task<IResult> Get(int id, HttpContext ctx, AppDb db, CancellationToken ct)
@@ -92,7 +167,7 @@ public static class InvoicesApi
         if (invoice is null) return Fail(404, "invoice not found");
         Audit.Record(db, ctx, g.Principal, "invoice.pdf", $"invoice#{invoice.Id}", invoice.Number);
         await db.SaveChangesAsync(ct);
-        return PdfFile(invoice);
+        return await PdfFileAsync(db, invoice, ct);
     }
 
     private static async Task<IResult> Void(HttpContext ctx, AppDb db, CancellationToken ct)
@@ -108,7 +183,7 @@ public static class InvoicesApi
         Audit.Record(db, ctx, g.Principal, "invoice.void", $"invoice#{invoice.Id}", invoice.Number);
         await db.SaveChangesAsync(ct);
         await db.Entry(invoice).ReloadAsync(ct);
-        return Json(200, new { invoice = AdminSummary(invoice) });
+        return Json(200, new { invoice = AdminSummary(invoice), detail = AdminDetail(invoice) });
     }
 
     private static async Task<IResult> AdminEvidence(int id, HttpContext ctx, AppDb db, CancellationToken ct)
@@ -156,8 +231,12 @@ public static class InvoicesApi
         return invoice;
     }
 
-    private static IResult PdfFile(Invoice invoice) =>
-        Results.File(invoice.PdfBytes, "application/pdf", $"invoice-{invoice.Number}.pdf");
+    private static async Task<IResult> PdfFileAsync(AppDb db, Invoice invoice, CancellationToken ct)
+    {
+        var snapshot = await InvoiceComposer.ComposeAsync(db, invoice, ct);
+        var pdf = InvoicePdf.Render(snapshot);
+        return Results.File(pdf, "application/pdf", $"invoice-{invoice.Number}.pdf");
+    }
 
     private static object PublicView(Invoice i) => new
     {
@@ -167,12 +246,20 @@ public static class InvoicesApi
         voidedAt = i.VoidedAt?.ToString("o")
     };
 
-    private static object AdminSummary(Invoice i) => new
+    private static object AdminSummary(Invoice i) => AdminSummary(
+        i.Id, i.PublicId, i.Number, i.OrderId, i.CustomerId, i.CustomerEmail, i.CustomerName,
+        i.ProductName, i.Status, i.PlanType, i.Amount, i.Currency, i.OrderPublicId, i.Gateway,
+        i.PdfSha256, i.IssuedAt, i.VoidedAt);
+
+    private static object AdminSummary(
+        int id, string publicId, string number, int orderId, int customerId, string customerEmail, string customerName,
+        string productName, string status, string planType, decimal amount, string currency, string orderPublicId,
+        string gateway, string pdfSha256, DateTime issuedAt, DateTime? voidedAt) => new
     {
-        i.Id, i.PublicId, i.Number, i.OrderId, i.CustomerId, i.CustomerEmail,
-        i.Status, i.PlanType, amount = i.Amount, i.Currency, i.OrderPublicId, i.PdfSha256,
-        issuedAt = i.IssuedAt.ToString("o"),
-        voidedAt = i.VoidedAt?.ToString("o")
+        id, publicId, number, orderId, customerId, customerEmail, customerName, productName,
+        status, planType, amount, currency, orderPublicId, gateway, pdfSha256,
+        issuedAt = issuedAt.ToString("o"),
+        voidedAt = voidedAt?.ToString("o")
     };
 
     private static object AdminDetail(Invoice i) => new
