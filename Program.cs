@@ -32,7 +32,11 @@ builder.Services.AddCors(options =>
     options.AddPolicy(AdminCorsPolicy, policy =>
     {
         if (adminOrigins.Length > 0)
-            policy.WithOrigins(adminOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials();
+            policy.WithOrigins(adminOrigins)
+                .AllowAnyHeader()
+                .AllowAnyMethod()
+                .AllowCredentials()
+                .WithExposedHeaders("Content-Disposition");
     });
 });
 
@@ -93,6 +97,7 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDb>();
     await db.Database.MigrateAsync();
     await ProductSeed.ApplyAsync(db, app.Configuration, app.Logger, CancellationToken.None);
+    await LicenseTerm.FillFromPurchaseAsync(db, app.Logger, CancellationToken.None);
     await AdminSeed.ApplyAsync(db, app.Configuration, app.Logger, CancellationToken.None);
     await RefundPolicySeed.ApplyAsync(db, app.Logger, CancellationToken.None);
 }

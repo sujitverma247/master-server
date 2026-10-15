@@ -27,4 +27,18 @@ public class PlanCatalogTests
         Assert.Equal(365, LicenseApi.PlanDurationDays("1year"));
         Assert.Equal(36500, LicenseApi.PlanDurationDays("lifetime"));
     }
+
+    [Fact]
+    public void Expiry_is_counted_from_purchase_not_activation()
+    {
+        var purchased = new DateTime(2026, 10, 16, 1, 41, 0, DateTimeKind.Utc);
+        var activated = purchased.AddDays(40);
+        var expires = LicenseTerm.FromPurchase(purchased, PlanCatalog.DefaultDurationDays("1year"));
+
+        Assert.Equal(purchased.AddDays(365), expires);
+        Assert.NotEqual(activated.AddDays(365), expires);
+        Assert.False(LicenseTerm.IsExpired(expires, purchased.AddDays(364)));
+        Assert.True(LicenseTerm.IsExpired(expires, purchased.AddDays(366)));
+        Assert.False(LicenseTerm.IsExpired(null, purchased));
+    }
 }

@@ -1,4 +1,4 @@
-using MasterServer.Data;
+using MasterServer.Licensing;
 using Microsoft.EntityFrameworkCore;
 
 namespace MasterServer.Data;
@@ -73,14 +73,15 @@ public static class ProductSeed
         if (int.TryParse(rawMax, out var parsed))
             maxMachines = Math.Clamp(parsed, 1, 100);
 
+        var purchasedAt = DateTime.UtcNow;
         db.Licenses.Add(new License
         {
             Key = seedKey,
             ProductId = product.Id,
             PlanType = planType,
             MaxMachines = maxMachines,
-            CreatedAt = DateTime.UtcNow,
-            ExpiresAt = null,
+            CreatedAt = purchasedAt,
+            ExpiresAt = await LicenseTerm.FromPurchaseAsync(db, planType, purchasedAt, ct),
             IsActive = true,
             IsRevoked = false
         });

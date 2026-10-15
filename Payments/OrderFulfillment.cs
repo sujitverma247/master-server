@@ -1,6 +1,7 @@
 using MasterServer.Data;
 using MasterServer.Invoices;
 using MasterServer.Keys;
+using MasterServer.Licensing;
 using MasterServer.Mail;
 using Microsoft.EntityFrameworkCore;
 
@@ -43,14 +44,15 @@ public static class OrderFulfillment
         do { key = KeyGenerator.Generate(product.KeyPrefix); }
         while (await db.Licenses.AnyAsync(l => l.Key == key, ct));
 
+        var purchasedAt = DateTime.UtcNow;
         var license = new License
         {
             Key = key,
             ProductId = order.ProductId,
             PlanType = order.PlanType,
             MaxMachines = maxMachines,
-            CreatedAt = DateTime.UtcNow,
-            ExpiresAt = null,
+            CreatedAt = purchasedAt,
+            ExpiresAt = await LicenseTerm.FromPurchaseAsync(db, order.PlanType, purchasedAt, ct),
             IsActive = true,
             IsRevoked = false,
             CustomerId = customer.Id,
@@ -64,7 +66,7 @@ public static class OrderFulfillment
 
         order.LicenseId = license.Id;
         order.Status = OrderStatuses.Paid;
-        order.PaidAt = DateTime.UtcNow;
+        order.PaidAt = purchasedAt;
         order.UpdatedAt = DateTime.UtcNow;
         if (!string.IsNullOrEmpty(externalPaymentId))
             order.ExternalPaymentId = externalPaymentId;

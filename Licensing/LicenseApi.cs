@@ -48,7 +48,7 @@ public static class LicenseApi
             return Fail(StatusCodes.Status422UnprocessableEntity, "license inactive");
 
         var now = DateTime.UtcNow;
-        if (license.ActivatedAt is not null && license.ExpiresAt is DateTime already && already < now)
+        if (LicenseTerm.IsExpired(license.ExpiresAt, now))
             return Fail(StatusCodes.Status422UnprocessableEntity, "license expired");
 
         var existing = license.Activations.FirstOrDefault(a => a.MachineId == machineId && a.DeactivatedAt == null);
@@ -62,11 +62,9 @@ public static class LicenseApi
         if (license.ActivatedAt is null)
         {
             license.ActivatedAt = now;
+            // Term is owned by purchase / the payment gateway. Never restart it from activation.
             if (license.ExpiresAt is null)
-            {
-                var days = await PlanCatalog.DurationDaysAsync(db, license.PlanType, ct);
-                license.ExpiresAt = now.AddDays(days);
-            }
+                license.ExpiresAt = await LicenseTerm.FromPurchaseAsync(db, license.PlanType, license.CreatedAt, ct);
         }
 
         if (existing is null)
@@ -118,7 +116,7 @@ public static class LicenseApi
             return Fail(StatusCodes.Status404NotFound, "invalid license key");
 
         var now = DateTime.UtcNow;
-        var expired = license.ActivatedAt is not null && license.ExpiresAt is DateTime exp && exp < now;
+        var expired = LicenseTerm.IsExpired(license.ExpiresAt, now);
         var valid = !license.IsRevoked && license.IsActive && !expired;
 
         var machineId = ctx.Request.Query["machineId"].ToString().Trim();
@@ -203,7 +201,7 @@ public static class LicenseApi
             return Fail(StatusCodes.Status404NotFound, "invalid license key");
 
         var now = DateTime.UtcNow;
-        var expired = license.ActivatedAt is not null && license.ExpiresAt is DateTime exp && exp < now;
+        var expired = LicenseTerm.IsExpired(license.ExpiresAt, now);
         if (license.IsRevoked)
             return Fail(StatusCodes.Status422UnprocessableEntity, "license revoked");
         if (!license.IsActive)

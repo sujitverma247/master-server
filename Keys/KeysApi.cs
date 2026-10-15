@@ -1,8 +1,10 @@
 using System.Text;
 using System.Text.Json;
 using MasterServer.Admin;
+using MasterServer.Catalog;
 using MasterServer.Customers;
 using MasterServer.Data;
+using MasterServer.Licensing;
 using MasterServer.Mail;
 using Microsoft.EntityFrameworkCore;
 
@@ -16,10 +18,12 @@ public static class KeysApi
     public static void Map(WebApplication app, IMailSender mail)
     {
         app.MapPost("/admin/keys/generate", (HttpContext c, AppDb db, CancellationToken ct) => Generate(c, db, ct));
+        app.MapPost("/admin/keys/issue", (HttpContext c, AppDb db, CancellationToken ct) => Issue(c, db, mail, ct));
         app.MapPost("/panel/keys/issue", (HttpContext c, AppDb db, CancellationToken ct) => Issue(c, db, mail, ct));
         app.MapGet("/admin/keys", (HttpContext c, AppDb db, CancellationToken ct) => List(c, db, ct));
         app.MapGet("/admin/keys/export", (HttpContext c, AppDb db, CancellationToken ct) => Export(c, db, ct));
         app.MapGet("/admin/keys/{id:int}", (int id, HttpContext c, AppDb db, CancellationToken ct) => Get(id, c, db, ct));
+        app.MapGet("/admin/keys/{id:int}/evidence", (int id, HttpContext c, AppDb db, CancellationToken ct) => Evidence(id, c, db, ct));
         app.MapPost("/admin/keys/revoke", (HttpContext c, AppDb db, CancellationToken ct) => Revoke(c, db, ct));
         app.MapPost("/admin/keys/revoke-batch", (HttpContext c, AppDb db, CancellationToken ct) => RevokeBatch(c, db, ct));
         app.MapPost("/admin/keys/update", (HttpContext c, AppDb db, CancellationToken ct) => Update(c, db, ct));
@@ -66,6 +70,7 @@ public static class KeysApi
 
         var keys = await GenerateUniqueKeys(db, product.KeyPrefix, quantity, ct);
         var now = DateTime.UtcNow;
+        var expiresAt = await LicenseTerm.FromPurchaseAsync(db, planType, now, ct);
         foreach (var key in keys)
         {
             db.Licenses.Add(new License
@@ -76,7 +81,7 @@ public static class KeysApi
                 PlanType = planType,
                 MaxMachines = maxMachines,
                 CreatedAt = now,
-                ExpiresAt = null,
+                ExpiresAt = expiresAt,
                 IsActive = true,
                 IsRevoked = false
             });
@@ -99,11 +104,11 @@ public static class KeysApi
 
         if (!TryInt(body.Value, "productId", out var productId))
             return Fail(400, "missing productId");
-        var product = await db.Products.FirstOrDefaultAsync(p => p.Id == productId, ct);
+        var product = await db.Products.FirstOrDefaultAsync(p => p.Id == productId && p.IsActive, ct);
         if (product is null) return Fail(422, "unknown productId");
 
-        var planType = Str(body.Value, "planType");
-        if (string.IsNullOrWhiteSpace(planType)) planType = "1year";
+        var planType = Str(body.Value, "planType").ToLowerInvariant();
+        if (planType.Length == 0) planType = "1year";
         var maxMachines = TryInt(body.Value, "maxMachines", out var mm) ? Math.Clamp(mm, 1, 100) : await DefaultMaxMachines(db, planType, ct);
 
         var explicitKey = Str(body.Value, "key").ToUpperInvariant();
@@ -119,42 +124,54 @@ public static class KeysApi
             key = (await GenerateUniqueKeys(db, product.KeyPrefix, 1, ct))[0];
         }
 
-        var rawEmail = Str(body.Value, "customerEmail");
-        Customer? customer = null;
-        var customerEmail = "";
-        if (rawEmail.Length > 0)
-        {
-            if (!EmailAddress.TryNormalize(rawEmail, out var email))
-                return Fail(400, "invalid customerEmail");
-            customer = await CustomerStore.FindOrCreateAsync(db, email, "", "key-issue", ct);
-            customerEmail = email;
-        }
+        var rawEmail = FirstNonEmpty(Str(body.Value, "customerEmail"), Str(body.Value, "email"));
+        if (!EmailAddress.TryNormalize(rawEmail, out var email))
+            return Fail(400, "invalid customerEmail");
+        var displayName = Str(body.Value, "name");
+        if (displayName.Length > 200) return Fail(400, "name too long");
+        var customer = await CustomerStore.FindOrCreateAsync(db, email, displayName, "key-issue", ct);
 
+        var notes = Str(body.Value, "notes");
+        if (notes.Length > 1024) return Fail(400, "notes too long");
+
+        var purchasedAt = DateTime.UtcNow;
         var license = new License
         {
             Key = key,
             ProductId = productId,
             PlanType = planType,
             MaxMachines = maxMachines,
-            CreatedAt = DateTime.UtcNow,
-            ExpiresAt = null,
+            CreatedAt = purchasedAt,
+            ExpiresAt = await LicenseTerm.FromPurchaseAsync(db, planType, purchasedAt, ct),
             IsActive = true,
             IsRevoked = false,
             Customer = customer,
-            CustomerEmail = customerEmail,
-            Notes = Str(body.Value, "notes"),
-            Source = Str(body.Value, "source")
+            CustomerEmail = email,
+            Notes = notes,
+            Source = ""
         };
         db.Licenses.Add(license);
         await db.SaveChangesAsync(ct);
 
         Audit.Record(db, ctx, g.Principal, "key.issue", $"license#{license.Id}", $"product={product.Slug},plan={planType},keyEnds={Mask(key)}");
-        if (customer is not null)
-            await MailOutbox.EnqueueLicenseIssuedAsync(db, license, null, ct);
+        await MailOutbox.EnqueueLicenseIssuedAsync(db, license, null, ct);
         await db.SaveChangesAsync(ct);
         await MailDispatch.DrainAsync(db, mail, 20, ct);
 
-        return Json(201, new { license = Detail(license, product, null) });
+        return Json(201, new
+        {
+            key = license.Key,
+            email,
+            name = customer.DisplayName,
+            productName = product.DisplayName,
+            productSlug = product.Slug,
+            planType,
+            maxMachines,
+            purchasedAt = license.CreatedAt.ToString("o"),
+            activatedAt = (string?)null,
+            expiresAt = license.ExpiresAt?.ToString("o"),
+            license = Detail(license, product, null)
+        });
     }
 
     // ---------- List ----------
@@ -168,27 +185,84 @@ public static class KeysApi
         if (int.TryParse(ctx.Request.Query["productId"], out var pid)) q = q.Where(l => l.ProductId == pid);
         if (int.TryParse(ctx.Request.Query["batchId"], out var bid)) q = q.Where(l => l.BatchId == bid);
 
+        var planType = ctx.Request.Query["planType"].ToString().Trim().ToLowerInvariant();
+        if (planType.Length > 0) q = q.Where(l => l.PlanType.ToLower() == planType);
+
+        var now = DateTime.UtcNow;
         var status = ctx.Request.Query["status"].ToString().ToLowerInvariant();
         q = status switch
         {
             "revoked" => q.Where(l => l.IsRevoked),
-            "inactive" => q.Where(l => !l.IsActive),
-            "active" => q.Where(l => l.IsActive && !l.IsRevoked),
-            "unused" => q.Where(l => l.ActivatedAt == null),
+            "inactive" => q.Where(l => !l.IsActive && !l.IsRevoked),
+            "active" => q.Where(l => l.IsActive && !l.IsRevoked && l.ActivatedAt != null && (l.ExpiresAt == null || l.ExpiresAt >= now)),
+            "unused" => q.Where(l => !l.IsRevoked && l.ActivatedAt == null && (l.ExpiresAt == null || l.ExpiresAt >= now)),
             "activated" => q.Where(l => l.ActivatedAt != null),
+            "expired" => q.Where(l => !l.IsRevoked && l.ExpiresAt != null && l.ExpiresAt < now),
             _ => q
         };
 
-        var search = ctx.Request.Query["q"].ToString().Trim();
+        var search = FirstNonEmpty(ctx.Request.Query["q"].ToString(), ctx.Request.Query["search"].ToString()).Trim();
         if (search.Length > 0)
         {
             var s = search.ToUpperInvariant();
             q = q.Where(l => l.Key.ToUpper().Contains(s) || l.CustomerEmail.ToUpper().Contains(s));
         }
 
-        var limit = int.TryParse(ctx.Request.Query["limit"], out var lim) ? Math.Clamp(lim, 1, 1000) : 100;
-        var rows = await q.OrderByDescending(l => l.Id).Take(limit).ToListAsync(ct);
-        return Json(200, new { keys = rows.Select(Summary) });
+        if (DateOnly.TryParse(ctx.Request.Query["from"], out var fromDay))
+        {
+            var fromUtc = fromDay.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(l => l.CreatedAt >= fromUtc);
+        }
+        if (DateOnly.TryParse(ctx.Request.Query["to"], out var toDay))
+        {
+            var toExclusive = toDay.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(l => l.CreatedAt < toExclusive);
+        }
+
+        var projected = q.Select(l => new
+        {
+            License = l,
+            ProductName = db.Products.Where(p => p.Id == l.ProductId).Select(p => p.DisplayName).FirstOrDefault() ?? "",
+            ProductSlug = db.Products.Where(p => p.Id == l.ProductId).Select(p => p.Slug).FirstOrDefault() ?? "",
+            PurchasedAt = db.Orders.Where(o => o.LicenseId == l.Id).Select(o => (DateTime?)(o.PaidAt ?? o.CreatedAt)).FirstOrDefault() ?? l.CreatedAt
+        });
+
+        var sort = ctx.Request.Query["sort"].ToString().Trim().ToLowerInvariant();
+        var asc = ctx.Request.Query["dir"].ToString().Trim().Equals("asc", StringComparison.OrdinalIgnoreCase);
+        projected = sort switch
+        {
+            "key" => asc ? projected.OrderBy(x => x.License.Key) : projected.OrderByDescending(x => x.License.Key),
+            "product" => asc ? projected.OrderBy(x => x.ProductName) : projected.OrderByDescending(x => x.ProductName),
+            "plan" => asc ? projected.OrderBy(x => x.License.PlanType) : projected.OrderByDescending(x => x.License.PlanType),
+            "customer" => asc ? projected.OrderBy(x => x.License.CustomerEmail) : projected.OrderByDescending(x => x.License.CustomerEmail),
+            "source" => asc ? projected.OrderBy(x => x.License.Source) : projected.OrderByDescending(x => x.License.Source),
+            "status" => asc ? projected.OrderBy(x => x.License.IsRevoked).ThenBy(x => x.License.ActivatedAt) : projected.OrderByDescending(x => x.License.IsRevoked).ThenByDescending(x => x.License.ActivatedAt),
+            "purchased" => asc ? projected.OrderBy(x => x.PurchasedAt) : projected.OrderByDescending(x => x.PurchasedAt),
+            "activated" => asc ? projected.OrderBy(x => x.License.ActivatedAt) : projected.OrderByDescending(x => x.License.ActivatedAt),
+            "expires" => asc ? projected.OrderBy(x => x.License.ExpiresAt) : projected.OrderByDescending(x => x.License.ExpiresAt),
+            _ => asc ? projected.OrderBy(x => x.License.CreatedAt) : projected.OrderByDescending(x => x.License.CreatedAt)
+        };
+
+        var total = await projected.CountAsync(ct);
+        var limit = CatalogPaging.NormalizeLimit(ctx.Request.Query["limit"].ToString());
+        var page = CatalogPaging.ClampPage(CatalogPaging.NormalizePage(ctx.Request.Query["page"].ToString()), total, limit);
+        var rows = await projected.Skip((page - 1) * limit).Take(limit).ToListAsync(ct);
+
+        var allCount = await db.Licenses.CountAsync(ct);
+        var unusedCount = await db.Licenses.CountAsync(l => !l.IsRevoked && l.ActivatedAt == null && (l.ExpiresAt == null || l.ExpiresAt >= now), ct);
+        var activeCount = await db.Licenses.CountAsync(l => l.IsActive && !l.IsRevoked && l.ActivatedAt != null && (l.ExpiresAt == null || l.ExpiresAt >= now), ct);
+        var revokedCount = await db.Licenses.CountAsync(l => l.IsRevoked, ct);
+        var planTypes = await db.Licenses.Select(l => l.PlanType).Distinct().OrderBy(x => x).ToListAsync(ct);
+
+        return Json(200, new
+        {
+            keys = rows.Select(x => Summary(x.License, x.ProductName, x.ProductSlug, now, x.PurchasedAt)),
+            total,
+            page,
+            limit,
+            counts = new { total = allCount, unused = unusedCount, active = activeCount, revoked = revokedCount },
+            planTypes
+        });
     }
 
     private static async Task<IResult> Get(int id, HttpContext ctx, AppDb db, CancellationToken ct)
@@ -200,6 +274,37 @@ public static class KeysApi
         if (license is null) return Fail(404, "key not found");
         var product = await db.Products.AsNoTracking().FirstOrDefaultAsync(p => p.Id == license.ProductId, ct);
         return Json(200, new { license = Detail(license, product, license.Activations) });
+    }
+
+    private static async Task<IResult> Evidence(int id, HttpContext ctx, AppDb db, CancellationToken ct)
+    {
+        var g = await Require(ctx, db, Permissions.KeyRead, ct);
+        if (g.Result is not null) return g.Result;
+
+        var license = await db.Licenses
+            .Include(l => l.Product).ThenInclude(p => p.Brand)
+            .Include(l => l.Customer)
+            .Include(l => l.Activations)
+            .FirstOrDefaultAsync(l => l.Id == id, ct);
+        if (license is null) return Fail(404, "key not found");
+
+        EvidenceDocument data;
+        try { data = await EvidenceComposer.BuildAsync(db, license, g.Principal!.User.Username, ct); }
+        catch
+        {
+            return Fail(500, "failed to assemble the evidence document");
+        }
+
+        byte[] pdf;
+        try { pdf = EvidencePdf.Render(data); }
+        catch
+        {
+            return Fail(500, "failed to generate the evidence document");
+        }
+
+        Audit.Record(db, ctx, g.Principal, "evidence.generate", $"license#{license.Id}", data.ReportId);
+        await db.SaveChangesAsync(ct);
+        return Results.File(pdf, "application/pdf", EvidencePdf.FileName(license.Key, data.GeneratedAtUtc));
     }
 
     // ---------- Revoke / update / delete ----------
@@ -248,7 +353,19 @@ public static class KeysApi
         if (license is null) return Fail(404, "key not found");
 
         var changes = new List<string>();
-        if (Str(body.Value, "planType") is { Length: > 0 } pt) { license.PlanType = pt; changes.Add("planType"); }
+        if (Str(body.Value, "planType") is { Length: > 0 } pt && !string.Equals(license.PlanType, pt, StringComparison.OrdinalIgnoreCase))
+        {
+            license.PlanType = pt;
+            changes.Add("planType");
+            if (!license.IsSubscription)
+            {
+                var purchased = await db.Orders.Where(o => o.LicenseId == license.Id)
+                    .Select(o => (DateTime?)(o.PaidAt ?? o.CreatedAt))
+                    .FirstOrDefaultAsync(ct) ?? license.CreatedAt;
+                license.ExpiresAt = await LicenseTerm.FromPurchaseAsync(db, pt, purchased, ct);
+                changes.Add("expiresAt");
+            }
+        }
         if (TryInt(body.Value, "maxMachines", out var mm)) { license.MaxMachines = Math.Clamp(mm, 1, 100); changes.Add("maxMachines"); }
         if (body.Value.TryGetProperty("notes", out _)) { license.Notes = Str(body.Value, "notes"); changes.Add("notes"); }
         if (body.Value.TryGetProperty("customerEmail", out _))
@@ -378,14 +495,34 @@ public static class KeysApi
         return null;
     }
 
-    private static object Summary(License l) => new
+    private static object Summary(License l) => Summary(l, "", "", DateTime.UtcNow, l.CreatedAt);
+
+    private static object Summary(License l, string productName, string productSlug, DateTime now, DateTime purchasedAt) => new
     {
-        l.Id, l.Key, l.ProductId, l.BatchId, l.CustomerId, l.PlanType, l.MaxMachines,
-        l.IsActive, l.IsRevoked, l.Source, l.CustomerEmail,
+        l.Id, l.Key, l.ProductId, productName, productSlug, l.BatchId, l.CustomerId, l.PlanType, l.MaxMachines,
+        l.IsActive, l.IsRevoked, l.Source, l.CustomerEmail, l.Notes,
+        status = LicenseStatus(l, now),
+        purchasedAt = purchasedAt.ToString("o"),
         activatedAt = l.ActivatedAt?.ToString("o"),
         expiresAt = l.ExpiresAt?.ToString("o"),
         createdAt = l.CreatedAt.ToString("o")
     };
+
+    private static string LicenseStatus(License l, DateTime now)
+    {
+        if (l.IsRevoked) return "revoked";
+        if (!l.IsActive) return "inactive";
+        if (LicenseTerm.IsExpired(l.ExpiresAt, now)) return "expired";
+        if (l.ActivatedAt is null) return "unused";
+        return "active";
+    }
+
+    private static string FirstNonEmpty(params string[] values)
+    {
+        foreach (var value in values)
+            if (!string.IsNullOrWhiteSpace(value)) return value.Trim();
+        return "";
+    }
 
     private static object Detail(License l, Product? product, IEnumerable<Activation>? activations) => new
     {
