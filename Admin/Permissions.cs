@@ -44,6 +44,9 @@ public static class Permissions
     public const string InvoiceRead = "invoice.read";
     public const string InvoiceWrite = "invoice.write";
 
+    // Analytics (Phase 11)
+    public const string AnalyticsRead = "analytics.read";
+
     public static readonly IReadOnlyDictionary<string, string> Catalog = new Dictionary<string, string>
     {
         [UserManage] = "Create, update, and deactivate panel users.",
@@ -64,7 +67,8 @@ public static class Permissions
         [SupportRead] = "View support tickets.",
         [SupportWrite] = "Reply, close, and reopen support tickets.",
         [InvoiceRead] = "View invoices, PDFs, and purchase evidence.",
-        [InvoiceWrite] = "Void invoices."
+        [InvoiceWrite] = "Void invoices.",
+        [AnalyticsRead] = "View dashboard totals, charts, and recent activity."
     };
 
     public const string RoleAdmin = "admin";
@@ -74,6 +78,6 @@ public static class Permissions
     public static readonly IReadOnlyDictionary<string, string[]> DefaultRoleGrants = new Dictionary<string, string[]>
     {
         [RoleAdmin] = Catalog.Keys.ToArray(),
-        [RoleAgent] = new[] { AuditRead, ProductRead, KeyRead, CustomerRead, PaymentRead, MailRead, TelemetryRead, SupportRead, SupportWrite, InvoiceRead }
+        [RoleAgent] = new[] { AuditRead, ProductRead, KeyRead, CustomerRead, PaymentRead, MailRead, TelemetryRead, SupportRead, SupportWrite, InvoiceRead, AnalyticsRead }
     };
 }

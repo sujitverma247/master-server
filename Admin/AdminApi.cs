@@ -29,14 +29,14 @@ public static class AdminApi
         var username = Str(body.Value, "username");
         var password = Str(body.Value, "password");
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
-            return Fail(StatusCodes.Status400BadRequest, "missing username or password");
+            return Fail(StatusCodes.Status400BadRequest, "Enter your username and password.");
 
         var user = await db.AdminUsers.FirstOrDefaultAsync(u => u.Username == username, ct);
         if (user is null || !user.IsActive || !PasswordHasher.Verify(password, user.PasswordHash))
         {
             Audit.Record(db, ctx, null, "auth.login.failed", username);
             await db.SaveChangesAsync(ct);
-            return Fail(StatusCodes.Status401Unauthorized, "invalid credentials");
+            return Fail(StatusCodes.Status401Unauthorized, "Incorrect username or password.");
         }
 
         var token = SessionToken.New();

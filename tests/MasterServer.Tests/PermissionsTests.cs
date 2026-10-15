@@ -32,6 +32,7 @@ public class PermissionsTests
         Assert.Contains(Permissions.SupportRead, agentGrants);
         Assert.Contains(Permissions.SupportWrite, agentGrants);
         Assert.Contains(Permissions.InvoiceRead, agentGrants);
+        Assert.Contains(Permissions.AnalyticsRead, agentGrants);
     }
 
     [Fact]

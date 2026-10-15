@@ -1,4 +1,5 @@
 using MasterServer.Admin;
+using MasterServer.Analytics;
 using MasterServer.Catalog;
 using MasterServer.Customers;
 using MasterServer.Data;
@@ -75,6 +76,7 @@ MailApi.Map(app, mail);
 TelemetryApi.Map(app);
 SupportApi.Map(app);
 InvoicesApi.Map(app);
+AnalyticsApi.Map(app);
 
 try
 {
