@@ -18,6 +18,7 @@ public static class PaymentsApi
         app.MapPost("/v1/checkout", (HttpContext c, AppDb db, CancellationToken ct) => Create(c, db, gateways, ct));
         app.MapGet("/v1/checkout/{publicId}", (string publicId, HttpContext c, AppDb db, CancellationToken ct) => GetPublic(publicId, db, ct));
         app.MapPost("/v1/webhooks/{gateway}", (string gateway, HttpContext c, AppDb db, CancellationToken ct) => Webhook(gateway, c, db, gateways, mail, ct));
+        app.MapPost("/webhooks/{gateway}", (string gateway, HttpContext c, AppDb db, CancellationToken ct) => Webhook(gateway, c, db, gateways, mail, ct));
 
         app.MapGet("/admin/orders", (HttpContext c, AppDb db, CancellationToken ct) => List(c, db, ct));
         app.MapGet("/admin/orders/{id:int}", (int id, HttpContext c, AppDb db, CancellationToken ct) => Get(id, c, db, ct));
@@ -159,6 +160,14 @@ public static class PaymentsApi
         {
             await tx.RollbackAsync(ct);
             return Json(200, new { received = true, duplicate = true });
+        }
+
+        var status = envelope.Status.Trim().ToLowerInvariant();
+        if (status.Length == 0 || status == "ignored")
+        {
+            await db.SaveChangesAsync(ct);
+            await tx.CommitAsync(ct);
+            return Json(200, new { received = true, duplicate = false });
         }
 
         var resolved = await WebhookOrder.ResolveOrCreateAsync(db, gateway.Name, envelope, ct);

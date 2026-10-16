@@ -13,10 +13,17 @@ public sealed class GatewayRegistry
 
     public static GatewayRegistry FromEnvironment()
     {
-        var devSecret = Environment.GetEnvironmentVariable("GATEWAY_DEV_SECRET") ?? "";
-        var defaultName = Environment.GetEnvironmentVariable("GATEWAY_DEFAULT") ?? DevGateway.GatewayName;
+        var devSecret = WebhookJson.Env("GATEWAY_DEV_SECRET");
+        var defaultName = WebhookJson.Env("GATEWAY_DEFAULT");
+        if (defaultName.Length == 0) defaultName = DevGateway.GatewayName;
         return new GatewayRegistry(
-            new IPaymentGateway[] { new DevGateway(devSecret), new ManualGateway() },
+            new IPaymentGateway[]
+            {
+                new DevGateway(devSecret),
+                new ManualGateway(),
+                new FreemiusGateway(WebhookJson.Env("FREEMIUS_WEBHOOK_SECRET")),
+                new DodoGateway(WebhookJson.Env("DODO_WEBHOOK_SECRET", "DODO_PAYMENTS_WEBHOOK_KEY"))
+            },
             defaultName);
     }
 
