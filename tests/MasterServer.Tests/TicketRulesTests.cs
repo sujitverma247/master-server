@@ -43,6 +43,14 @@ public class TicketRulesTests
     }
 
     [Fact]
+    public void Subject_is_taken_from_the_first_line_of_issue()
+    {
+        Assert.Equal("", TicketRules.SubjectFromIssue("   "));
+        Assert.Equal("When entering a web site", TicketRules.SubjectFromIssue("When entering a web site\nmore detail"));
+        Assert.Equal(200, TicketRules.SubjectFromIssue(new string('i', 250)).Length);
+    }
+
+    [Fact]
     public void Subject_and_body_are_trimmed_and_capped()
     {
         Assert.Equal("", TicketRules.NormalizeSubject("   "));
@@ -52,15 +60,11 @@ public class TicketRulesTests
     }
 
     [Fact]
-    public void Public_id_is_32_hex_and_not_sequential()
+    public void Public_id_matches_yearly_ticket_number()
     {
-        var a = TicketRules.NewPublicId();
-        var b = TicketRules.NewPublicId();
-        Assert.True(TicketRules.IsPublicId(a));
-        Assert.True(TicketRules.IsPublicId(b));
-        Assert.NotEqual(a, b);
+        Assert.True(TicketRules.IsPublicId("TIKC-001-2026"));
         Assert.False(TicketRules.IsPublicId("1"));
         Assert.False(TicketRules.IsPublicId(""));
-        Assert.False(TicketRules.IsPublicId(new string('g', 32)));
+        Assert.False(TicketRules.IsPublicId(new string('a', 32)));
     }
 }

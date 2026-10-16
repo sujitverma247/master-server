@@ -379,9 +379,26 @@ public class AppDb : DbContext
             entity.Property(t => t.Subject).HasMaxLength(200);
             entity.Property(t => t.Status).HasMaxLength(16);
             entity.Property(t => t.Priority).HasMaxLength(16);
+            entity.Property(t => t.Phone).HasMaxLength(32);
+            entity.Property(t => t.Street).HasMaxLength(200);
+            entity.Property(t => t.City).HasMaxLength(100);
+            entity.Property(t => t.Region).HasMaxLength(100);
+            entity.Property(t => t.PostalCode).HasMaxLength(20);
+            entity.Property(t => t.Country).HasMaxLength(100);
+            entity.Property(t => t.Address).HasMaxLength(512);
+            entity.Property(t => t.IpAddress).HasMaxLength(64);
+            entity.Property(t => t.Device).HasMaxLength(32);
+            entity.Property(t => t.OsVersion).HasMaxLength(128);
+            entity.Property(t => t.Browser).HasMaxLength(64);
+            entity.Property(t => t.Language).HasMaxLength(32);
+            entity.Property(t => t.Timezone).HasMaxLength(64);
+            entity.Property(t => t.Screen).HasMaxLength(32);
+            entity.Property(t => t.Geo).HasMaxLength(200);
+            entity.Property(t => t.Isp).HasMaxLength(200);
             entity.HasIndex(t => t.PublicId).IsUnique();
             entity.HasIndex(t => t.CustomerId);
             entity.HasIndex(t => t.Status);
+            entity.HasIndex(t => t.BrandId);
             entity.HasOne(t => t.Customer)
                 .WithMany()
                 .HasForeignKey(t => t.CustomerId)
@@ -389,6 +406,10 @@ public class AppDb : DbContext
             entity.HasOne<Product>()
                 .WithMany()
                 .HasForeignKey(t => t.ProductId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne<Brand>()
+                .WithMany()
+                .HasForeignKey(t => t.BrandId)
                 .OnDelete(DeleteBehavior.SetNull);
             entity.HasOne<License>()
                 .WithMany()

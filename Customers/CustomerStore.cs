@@ -40,4 +40,14 @@ public static class CustomerStore
         customer.Locale = locale;
         customer.UpdatedAt = DateTime.UtcNow;
     }
+
+    public static void ApplyPhone(Customer? customer, string? raw)
+    {
+        if (customer is null) return;
+        var phone = (raw ?? "").Trim();
+        if (phone.Length == 0 || customer.Phone.Length > 0) return;
+        if (phone.Length > 32) phone = phone[..32];
+        customer.Phone = phone;
+        customer.UpdatedAt = DateTime.UtcNow;
+    }
 }

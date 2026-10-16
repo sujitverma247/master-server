@@ -25,6 +25,14 @@ public static class TicketRules
         return s;
     }
 
+    public static string SubjectFromIssue(string issue)
+    {
+        var s = (issue ?? "").Trim();
+        var breakAt = s.IndexOfAny(['\r', '\n']);
+        if (breakAt >= 0) s = s[..breakAt].Trim();
+        return NormalizeSubject(s);
+    }
+
     public static string NormalizeBody(string body)
     {
         var s = (body ?? "").Trim();
@@ -32,10 +40,5 @@ public static class TicketRules
         return s;
     }
 
-    public static string NewPublicId() => Guid.NewGuid().ToString("N");
-
-    public static bool IsPublicId(string? publicId) =>
-        !string.IsNullOrEmpty(publicId)
-        && publicId.Length == 32
-        && publicId.All(static c => Uri.IsHexDigit(c));
+    public static bool IsPublicId(string? publicId) => TicketNumber.IsValid(publicId);
 }
