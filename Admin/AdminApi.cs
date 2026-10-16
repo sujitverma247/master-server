@@ -1,4 +1,5 @@
 using System.Text.Json;
+using MasterServer.Catalog;
 using MasterServer.Data;
 using MasterServer.Security;
 using Microsoft.EntityFrameworkCore;
@@ -15,9 +16,11 @@ public static class AdminApi
         app.MapPost("/admin/logout", (HttpContext ctx, AppDb db, CancellationToken ct) => Logout(ctx, db, ct));
         app.MapGet("/admin/me", (HttpContext ctx, AppDb db, CancellationToken ct) => Me(ctx, db, ct));
         app.MapGet("/admin/users", (HttpContext ctx, AppDb db, CancellationToken ct) => ListUsers(ctx, db, ct));
+        app.MapGet("/admin/users/{id:int}", (int id, HttpContext ctx, AppDb db, CancellationToken ct) => GetUser(id, ctx, db, ct));
         app.MapPost("/admin/users", (HttpContext ctx, AppDb db, CancellationToken ct) => CreateUser(ctx, db, ct));
         app.MapPost("/admin/users/update", (HttpContext ctx, AppDb db, CancellationToken ct) => UpdateUser(ctx, db, ct));
         app.MapGet("/admin/audit", (HttpContext ctx, AppDb db, CancellationToken ct) => ListAudit(ctx, db, ct));
+        app.MapGet("/admin/audit/{id:long}", (long id, HttpContext ctx, AppDb db, CancellationToken ct) => GetAudit(id, ctx, db, ct));
     }
 
     private static async Task<IResult> Login(HttpContext ctx, AppDb db, int sessionHours, CancellationToken ct)
@@ -34,7 +37,7 @@ public static class AdminApi
         var user = await db.AdminUsers.FirstOrDefaultAsync(u => u.Username == username, ct);
         if (user is null || !user.IsActive || !PasswordHasher.Verify(password, user.PasswordHash))
         {
-            Audit.Record(db, ctx, null, "auth.login.failed", username);
+            Audit.Record(db, ctx, null, "auth.login.failed", username, username: username);
             await db.SaveChangesAsync(ct);
             return Fail(StatusCodes.Status401Unauthorized, "Incorrect username or password.");
         }
@@ -53,7 +56,7 @@ public static class AdminApi
         await db.AdminSessions.Where(s => s.UserId == user.Id && s.ExpiresAt < cutoff).ExecuteDeleteAsync(ct);
 
         user.LastLoginAt = DateTime.UtcNow;
-        Audit.Record(db, ctx, null, "auth.login", username);
+        Audit.Record(db, ctx, null, "auth.login", username, username: user.Username, userId: user.Id, role: user.Role);
         await db.SaveChangesAsync(ct);
 
         var permissions = await AdminAuth.LoadPermissionsAsync(db, user.Role, ct);
@@ -93,20 +96,94 @@ public static class AdminApi
         if (!principal.Has(Permissions.UserManage))
             return Forbidden();
 
-        var users = await db.AdminUsers.OrderBy(u => u.Id).ToListAsync(ct);
+        var q = db.AdminUsers.AsNoTracking().AsQueryable();
+        var role = ctx.Request.Query["role"].ToString().Trim();
+        if (role.Length > 0)
+            q = q.Where(u => u.Role == role);
+
+        var status = ctx.Request.Query["status"].ToString().Trim().ToLowerInvariant();
+        if (status == "active") q = q.Where(u => u.IsActive);
+        else if (status == "inactive") q = q.Where(u => !u.IsActive);
+
+        var search = ctx.Request.Query["q"].ToString().Trim();
+        if (search.Length > 0)
+        {
+            var s = search.ToLowerInvariant();
+            q = q.Where(u =>
+                u.Username.ToLower().Contains(s)
+                || u.DisplayName.ToLower().Contains(s)
+                || u.Role.ToLower().Contains(s));
+        }
+
+        if (DateOnly.TryParse(ctx.Request.Query["from"], out var fromDay))
+        {
+            var fromUtc = fromDay.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(u => u.CreatedAt >= fromUtc);
+        }
+        if (DateOnly.TryParse(ctx.Request.Query["to"], out var toDay))
+        {
+            var toExclusive = toDay.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(u => u.CreatedAt < toExclusive);
+        }
+
+        var sort = ctx.Request.Query["sort"].ToString().Trim().ToLowerInvariant();
+        var asc = ctx.Request.Query["dir"].ToString().Trim().Equals("asc", StringComparison.OrdinalIgnoreCase);
+        q = sort switch
+        {
+            "id" => asc ? q.OrderBy(u => u.Id) : q.OrderByDescending(u => u.Id),
+            "username" => asc ? q.OrderBy(u => u.Username) : q.OrderByDescending(u => u.Username),
+            "displayname" or "name" => asc ? q.OrderBy(u => u.DisplayName) : q.OrderByDescending(u => u.DisplayName),
+            "role" => asc ? q.OrderBy(u => u.Role) : q.OrderByDescending(u => u.Role),
+            "status" => asc ? q.OrderBy(u => u.IsActive) : q.OrderByDescending(u => u.IsActive),
+            "lastlogin" or "lastloginat" => asc ? q.OrderBy(u => u.LastLoginAt) : q.OrderByDescending(u => u.LastLoginAt),
+            _ => asc ? q.OrderBy(u => u.CreatedAt) : q.OrderByDescending(u => u.CreatedAt)
+        };
+
+        var total = await q.CountAsync(ct);
+        var limit = CatalogPaging.NormalizeLimit(ctx.Request.Query["limit"].ToString());
+        var page = CatalogPaging.ClampPage(CatalogPaging.NormalizePage(ctx.Request.Query["page"].ToString()), total, limit);
+        var rows = await q.Skip((page - 1) * limit).Take(limit).ToListAsync(ct);
+
+        var allCount = await db.AdminUsers.CountAsync(ct);
+        var activeCount = await db.AdminUsers.CountAsync(u => u.IsActive, ct);
+        var adminCount = await db.AdminUsers.CountAsync(u => u.Role == Permissions.RoleAdmin && u.IsActive, ct);
+        var roles = await db.RolePermissions.AsNoTracking()
+            .Select(r => r.Role)
+            .Distinct()
+            .OrderBy(n => n)
+            .ToListAsync(ct);
+        if (roles.Count == 0)
+            roles = [Permissions.RoleAdmin, Permissions.RoleAgent];
+
         return Json(StatusCodes.Status200OK, new
         {
-            users = users.Select(u => new
+            users = rows.Select(ListUserView),
+            total,
+            page,
+            limit,
+            counts = new
             {
-                u.Id,
-                u.Username,
-                u.Role,
-                u.DisplayName,
-                u.IsActive,
-                createdAt = u.CreatedAt.ToString("o"),
-                lastLoginAt = u.LastLoginAt?.ToString("o")
-            })
+                total = allCount,
+                active = activeCount,
+                inactive = allCount - activeCount,
+                admins = adminCount
+            },
+            roles
         });
+    }
+
+    private static async Task<IResult> GetUser(int id, HttpContext ctx, AppDb db, CancellationToken ct)
+    {
+        var principal = await AdminAuth.ResolveAsync(ctx, db, ct);
+        if (principal is null)
+            return Unauthorized();
+        if (!principal.Has(Permissions.UserManage))
+            return Forbidden();
+
+        var user = await db.AdminUsers.AsNoTracking().FirstOrDefaultAsync(u => u.Id == id, ct);
+        if (user is null)
+            return Fail(StatusCodes.Status404NotFound, "user not found");
+        return Json(StatusCodes.Status200OK, new { user = ListUserView(user) });
     }
 
     private static async Task<IResult> CreateUser(HttpContext ctx, AppDb db, CancellationToken ct)
@@ -127,6 +204,14 @@ public static class AdminApi
         var displayName = Str(body.Value, "displayName");
         if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(password))
             return Fail(StatusCodes.Status400BadRequest, "missing username or password");
+        if (!IsUsername(username))
+            return Fail(StatusCodes.Status400BadRequest, "invalid username");
+        if (password.Length < 8)
+            return Fail(StatusCodes.Status400BadRequest, "password too short");
+        if (password.Length > 128)
+            return Fail(StatusCodes.Status400BadRequest, "password too long");
+        if (displayName.Length > 200)
+            return Fail(StatusCodes.Status400BadRequest, "displayName too long");
         if (string.IsNullOrWhiteSpace(role))
             role = Permissions.RoleAgent;
         if (!await db.RolePermissions.AnyAsync(r => r.Role == role, ct))
@@ -173,34 +258,60 @@ public static class AdminApi
         var changes = new List<string>();
 
         var role = Str(body.Value, "role");
+        var nextRole = user.Role;
         if (!string.IsNullOrWhiteSpace(role) && role != user.Role)
         {
             if (!await db.RolePermissions.AnyAsync(r => r.Role == role, ct))
                 return Fail(StatusCodes.Status422UnprocessableEntity, "unknown role");
-            user.Role = role;
-            changes.Add($"role={role}");
+            nextRole = role;
+        }
+
+        var nextActive = user.IsActive;
+        var hasActive = TryBool(body.Value, "isActive", out var isActive);
+        if (hasActive)
+            nextActive = isActive;
+
+        if (user.Role == Permissions.RoleAdmin && user.IsActive
+            && (nextRole != Permissions.RoleAdmin || !nextActive))
+        {
+            var otherAdmins = await db.AdminUsers.CountAsync(
+                u => u.Id != user.Id && u.Role == Permissions.RoleAdmin && u.IsActive, ct);
+            if (otherAdmins == 0)
+                return Fail(StatusCodes.Status422UnprocessableEntity, "cannot remove the last admin");
+        }
+
+        if (nextRole != user.Role)
+        {
+            user.Role = nextRole;
+            changes.Add($"role={nextRole}");
         }
 
         var displayName = Str(body.Value, "displayName");
-        if (!string.IsNullOrWhiteSpace(displayName))
+        if (displayName.Length > 200)
+            return Fail(StatusCodes.Status400BadRequest, "displayName too long");
+        if (!string.IsNullOrWhiteSpace(displayName) && displayName != user.DisplayName)
         {
             user.DisplayName = displayName;
             changes.Add("displayName");
         }
 
-        if (TryBool(body.Value, "isActive", out var isActive) && isActive != user.IsActive)
+        if (hasActive && nextActive != user.IsActive)
         {
-            if (!isActive && user.Id == principal.User.Id)
+            if (!nextActive && user.Id == principal.User.Id)
                 return Fail(StatusCodes.Status422UnprocessableEntity, "cannot deactivate yourself");
-            user.IsActive = isActive;
-            changes.Add($"isActive={isActive}");
-            if (!isActive)
+            user.IsActive = nextActive;
+            changes.Add($"isActive={nextActive}");
+            if (!nextActive)
                 await db.AdminSessions.Where(s => s.UserId == user.Id).ExecuteDeleteAsync(ct);
         }
 
         var password = Str(body.Value, "password");
         if (!string.IsNullOrWhiteSpace(password))
         {
+            if (password.Length < 8)
+                return Fail(StatusCodes.Status400BadRequest, "password too short");
+            if (password.Length > 128)
+                return Fail(StatusCodes.Status400BadRequest, "password too long");
             user.PasswordHash = PasswordHasher.Hash(password);
             changes.Add("password");
             await db.AdminSessions.Where(s => s.UserId == user.Id && s.UserId != principal.User.Id).ExecuteDeleteAsync(ct);
@@ -221,28 +332,120 @@ public static class AdminApi
         if (!principal.Has(Permissions.AuditRead))
             return Forbidden();
 
-        var limit = 100;
-        if (int.TryParse(ctx.Request.Query["limit"].ToString(), out var parsed))
-            limit = Math.Clamp(parsed, 1, 500);
+        var q = db.AuditLogs.AsNoTracking().AsQueryable();
+        var action = ctx.Request.Query["action"].ToString().Trim();
+        if (action.Length > 0)
+        {
+            if (action.Contains('.'))
+                q = q.Where(a => a.Action == action);
+            else
+            {
+                var prefix = action + ".";
+                q = q.Where(a => a.Action == action || a.Action.StartsWith(prefix));
+            }
+        }
+        var user = ctx.Request.Query["user"].ToString().Trim();
+        if (user.Length > 0)
+            q = q.Where(a => a.Username == user || (a.Username == "" && a.Action.StartsWith("auth.") && a.Target == user));
 
-        var rows = await db.AuditLogs
-            .OrderByDescending(a => a.Id)
-            .Take(limit)
+        var search = ctx.Request.Query["q"].ToString().Trim();
+        if (search.Length > 0)
+        {
+            var s = search.ToLowerInvariant();
+            q = q.Where(a =>
+                a.Username.ToLower().Contains(s)
+                || a.Role.ToLower().Contains(s)
+                || a.Action.ToLower().Contains(s)
+                || a.Target.ToLower().Contains(s)
+                || a.Details.ToLower().Contains(s)
+                || a.IpAddress.Contains(s));
+        }
+
+        if (DateOnly.TryParse(ctx.Request.Query["from"], out var fromDay))
+        {
+            var fromUtc = fromDay.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(a => a.CreatedAt >= fromUtc);
+        }
+        if (DateOnly.TryParse(ctx.Request.Query["to"], out var toDay))
+        {
+            var toExclusive = toDay.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+            q = q.Where(a => a.CreatedAt < toExclusive);
+        }
+
+        var projected = q.Select(a => new
+        {
+            a.Id, a.UserId, a.Username, a.Role, a.Action, a.Target, a.Details, a.IpAddress, a.CreatedAt
+        });
+
+        var sort = ctx.Request.Query["sort"].ToString().Trim().ToLowerInvariant();
+        var asc = ctx.Request.Query["dir"].ToString().Trim().Equals("asc", StringComparison.OrdinalIgnoreCase);
+        projected = sort switch
+        {
+            "id" => asc ? projected.OrderBy(x => x.Id) : projected.OrderByDescending(x => x.Id),
+            "user" or "username" => asc ? projected.OrderBy(x => x.Username) : projected.OrderByDescending(x => x.Username),
+            "role" => asc ? projected.OrderBy(x => x.Role) : projected.OrderByDescending(x => x.Role),
+            "action" => asc ? projected.OrderBy(x => x.Action) : projected.OrderByDescending(x => x.Action),
+            "target" => asc ? projected.OrderBy(x => x.Target) : projected.OrderByDescending(x => x.Target),
+            "ip" or "ipaddress" => asc ? projected.OrderBy(x => x.IpAddress) : projected.OrderByDescending(x => x.IpAddress),
+            _ => asc ? projected.OrderBy(x => x.CreatedAt) : projected.OrderByDescending(x => x.CreatedAt)
+        };
+
+        var total = await projected.CountAsync(ct);
+        var limit = CatalogPaging.NormalizeLimit(ctx.Request.Query["limit"].ToString());
+        var page = CatalogPaging.ClampPage(CatalogPaging.NormalizePage(ctx.Request.Query["page"].ToString()), total, limit);
+        var rows = await projected.Skip((page - 1) * limit).Take(limit).ToListAsync(ct);
+
+        var todayStart = DateTime.SpecifyKind(DateTime.UtcNow.Date, DateTimeKind.Utc);
+        var allCount = await db.AuditLogs.CountAsync(ct);
+        var todayCount = await db.AuditLogs.CountAsync(a => a.CreatedAt >= todayStart, ct);
+        var loginCount = await db.AuditLogs.CountAsync(a => a.Action == "auth.login", ct);
+        var failedCount = await db.AuditLogs.CountAsync(a => a.Action == "auth.login.failed", ct);
+        var actions = await db.AuditLogs.AsNoTracking()
+            .Where(a => a.Action != "")
+            .Select(a => a.Action)
+            .Distinct()
+            .OrderBy(n => n)
+            .ToListAsync(ct);
+        var users = await db.AuditLogs.AsNoTracking()
+            .Where(a => a.Username != "")
+            .Select(a => a.Username)
+            .Distinct()
+            .OrderBy(n => n)
             .ToListAsync(ct);
 
         return Json(StatusCodes.Status200OK, new
         {
-            entries = rows.Select(a => new
+            audit = rows.Select(x => new
             {
-                a.Id,
-                a.Username,
-                a.Role,
-                a.Action,
-                a.Target,
-                a.Details,
-                a.IpAddress,
-                createdAt = a.CreatedAt.ToString("o")
-            })
+                x.Id, x.UserId, x.Username, x.Role, x.Action, x.Target, x.Details, x.IpAddress,
+                createdAt = x.CreatedAt.ToString("o")
+            }),
+            total,
+            page,
+            limit,
+            counts = new { total = allCount, today = todayCount, logins = loginCount, failed = failedCount },
+            actions,
+            users
+        });
+    }
+
+    private static async Task<IResult> GetAudit(long id, HttpContext ctx, AppDb db, CancellationToken ct)
+    {
+        var principal = await AdminAuth.ResolveAsync(ctx, db, ct);
+        if (principal is null)
+            return Unauthorized();
+        if (!principal.Has(Permissions.AuditRead))
+            return Forbidden();
+
+        var row = await db.AuditLogs.AsNoTracking().FirstOrDefaultAsync(a => a.Id == id, ct);
+        if (row is null) return Fail(StatusCodes.Status404NotFound, "audit entry not found");
+        return Json(StatusCodes.Status200OK, new
+        {
+            audit = new
+            {
+                row.Id, row.UserId, row.Username, row.Role, row.Action, row.Target, row.Details, row.IpAddress,
+                createdAt = row.CreatedAt.ToString("o")
+            }
         });
     }
 
@@ -255,6 +458,28 @@ public static class AdminApi
         user.IsActive,
         permissions = permissions.OrderBy(p => p, StringComparer.Ordinal).ToArray()
     };
+
+    private static object ListUserView(AdminUser user) => new
+    {
+        user.Id,
+        user.Username,
+        user.Role,
+        user.DisplayName,
+        user.IsActive,
+        createdAt = user.CreatedAt.ToString("o"),
+        lastLoginAt = user.LastLoginAt?.ToString("o")
+    };
+
+    private static bool IsUsername(string value)
+    {
+        if (value.Length is < 2 or > 128) return false;
+        foreach (var c in value)
+        {
+            if (char.IsAsciiLetterOrDigit(c) || c is '.' or '_' or '-') continue;
+            return false;
+        }
+        return true;
+    }
 
     private static async Task<JsonElement?> ReadBodyAsync(HttpContext ctx, CancellationToken ct)
     {
