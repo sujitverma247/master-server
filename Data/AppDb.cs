@@ -136,6 +136,7 @@ public class AppDb : DbContext
     public DbSet<Customer> Customers => Set<Customer>();
     public DbSet<RefundPolicy> RefundPolicies => Set<RefundPolicy>();
     public DbSet<RefundPolicyAcceptance> RefundPolicyAcceptances => Set<RefundPolicyAcceptance>();
+    public DbSet<CheckoutSession> CheckoutSessions => Set<CheckoutSession>();
     public DbSet<Order> Orders => Set<Order>();
     public DbSet<PaymentEvent> PaymentEvents => Set<PaymentEvent>();
     public DbSet<GatewayPlan> GatewayPlans => Set<GatewayPlan>();
@@ -273,6 +274,30 @@ public class AppDb : DbContext
             entity.HasOne(a => a.Policy)
                 .WithMany()
                 .HasForeignKey(a => a.PolicyId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<CheckoutSession>(entity =>
+        {
+            entity.ToTable("CheckoutSessions");
+            entity.Property(s => s.ProductSlug).HasMaxLength(64);
+            entity.Property(s => s.PlanCode).HasMaxLength(32);
+            entity.Property(s => s.Source).HasMaxLength(32);
+            entity.Property(s => s.IpAddress).HasMaxLength(64);
+            entity.Property(s => s.Device).HasMaxLength(32);
+            entity.Property(s => s.OsVersion).HasMaxLength(128);
+            entity.Property(s => s.Browser).HasMaxLength(64);
+            entity.Property(s => s.Language).HasMaxLength(32);
+            entity.Property(s => s.Timezone).HasMaxLength(64);
+            entity.Property(s => s.Screen).HasMaxLength(32);
+            entity.Property(s => s.Geo).HasMaxLength(200);
+            entity.Property(s => s.Isp).HasMaxLength(200);
+            entity.Property(s => s.UserAgent).HasMaxLength(256);
+            entity.HasIndex(s => s.CustomerId);
+            entity.HasIndex(s => s.CreatedAt);
+            entity.HasOne(s => s.Customer)
+                .WithMany(c => c.CheckoutSessions)
+                .HasForeignKey(s => s.CustomerId)
                 .OnDelete(DeleteBehavior.Restrict);
         });
 

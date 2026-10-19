@@ -1,6 +1,7 @@
 using System.Text.Json;
 using MasterServer.Admin;
 using MasterServer.Data;
+using MasterServer.Support;
 using Microsoft.EntityFrameworkCore;
 
 namespace MasterServer.Customers;
@@ -44,12 +45,23 @@ public static class CheckoutApi
         if (version.Length > 0 && current.Version != version)
             return Fail(422, "accept the current policy");
 
-        var customer = await CustomerStore.FindOrCreateAsync(db, email, name, "website", ct);
+        var source = FirstNonEmpty(Str(body.Value, "source"), "website");
+        var customer = await CustomerStore.FindOrCreateAsync(db, email, name, source, ct);
         customer.DisplayName = name;
         if (phone.Length > 0) customer.Phone = phone;
         customer.UpdatedAt = DateTime.UtcNow;
         CustomerStore.ApplyLocale(customer, FirstNonEmpty(Str(body.Value, "locale"), Str(body.Value, "language")));
         await db.SaveChangesAsync(ct);
+
+        var session = await CheckoutCapture.CaptureAsync(
+            ctx,
+            body.Value,
+            customer.Id,
+            FirstNonEmpty(Str(body.Value, "productSlug"), Str(body.Value, "slug")),
+            FirstNonEmpty(Str(body.Value, "planCode"), Str(body.Value, "plan")),
+            source,
+            ct);
+        db.CheckoutSessions.Add(session);
 
         var existing = await db.RefundPolicyAcceptances
             .FirstOrDefaultAsync(a => a.CustomerId == customer.Id && a.PolicyId == current.Id, ct);
@@ -60,13 +72,14 @@ public static class CheckoutApi
                 CustomerId = customer.Id,
                 PolicyId = current.Id,
                 AcceptedAt = DateTime.UtcNow,
-                IpAddress = ctx.Connection.RemoteIpAddress?.ToString() ?? "",
-                UserAgent = ctx.Request.Headers.UserAgent.ToString(),
-                Source = FirstNonEmpty(Str(body.Value, "source"), "website")
+                IpAddress = session.IpAddress,
+                UserAgent = TicketReporter.Clip(session.UserAgent, 256),
+                Source = source
             });
             Audit.Record(db, ctx, null, "policy.accept", email, $"version={current.Version};checkout");
-            await db.SaveChangesAsync(ct);
         }
+
+        await db.SaveChangesAsync(ct);
 
         return Json(200, new
         {

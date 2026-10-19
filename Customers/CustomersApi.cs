@@ -136,7 +136,11 @@ public static class CustomersApi
         if (customer is null) return Fail(404, "customer not found");
 
         var acceptedCurrent = await RefundPolicyGate.HasAcceptedCurrentAsync(db, customer.Id, ct);
-        return Json(200, new { customer = Detail(customer, acceptedCurrent) });
+        var checkout = await db.CheckoutSessions.AsNoTracking()
+            .Where(s => s.CustomerId == customer.Id)
+            .OrderByDescending(s => s.Id)
+            .FirstOrDefaultAsync(ct);
+        return Json(200, new { customer = Detail(customer, acceptedCurrent, checkout) });
     }
 
     private static async Task<IResult> Create(HttpContext ctx, AppDb db, CancellationToken ct)
@@ -396,7 +400,7 @@ public static class CustomersApi
         updatedAt = c.UpdatedAt.ToString("o")
     };
 
-    private static object Detail(Customer c, bool acceptedCurrent) => new
+    private static object Detail(Customer c, bool acceptedCurrent, CheckoutSession? checkout) => new
     {
         c.Id, c.Email, c.DisplayName, c.Phone, c.Notes, c.Source, c.ExternalCustomerId, c.IsActive, acceptedCurrent,
         licenseCount = c.Licenses.Count,
@@ -412,7 +416,22 @@ public static class CustomersApi
         {
             a.Id, policyVersion = a.Policy.Version, a.Source,
             acceptedAt = a.AcceptedAt.ToString("o")
-        })
+        }),
+        checkout = checkout is null ? null : new
+        {
+            ip = checkout.IpAddress,
+            device = checkout.Device,
+            os = checkout.OsVersion,
+            browser = checkout.Browser,
+            language = checkout.Language,
+            timezone = checkout.Timezone,
+            screen = checkout.Screen,
+            geo = checkout.Geo,
+            isp = checkout.Isp,
+            productSlug = checkout.ProductSlug,
+            planCode = checkout.PlanCode,
+            capturedAt = checkout.CreatedAt.ToString("o")
+        }
     };
 
     private static object PolicyView(RefundPolicy p) => new

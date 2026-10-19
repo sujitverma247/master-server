@@ -18,6 +18,7 @@ public class Customer
 
     public ICollection<License> Licenses { get; set; } = new List<License>();
     public ICollection<RefundPolicyAcceptance> Acceptances { get; set; } = new List<RefundPolicyAcceptance>();
+    public ICollection<CheckoutSession> CheckoutSessions { get; set; } = new List<CheckoutSession>();
 }
 
 /// <summary>A published refund-policy version. Exactly one row should have IsCurrent = true.</summary>
@@ -44,4 +45,26 @@ public class RefundPolicyAcceptance
     public string IpAddress { get; set; } = "";
     public string UserAgent { get; set; } = "";
     public string Source { get; set; } = "";
+}
+
+/// <summary>Browser and network context captured when a buyer continues from Buy Now.</summary>
+public class CheckoutSession
+{
+    public long Id { get; set; }
+    public int CustomerId { get; set; }
+    public Customer Customer { get; set; } = null!;
+    public string ProductSlug { get; set; } = "";
+    public string PlanCode { get; set; } = "";
+    public string Source { get; set; } = "";
+    public string IpAddress { get; set; } = "";
+    public string Device { get; set; } = "";
+    public string OsVersion { get; set; } = "";
+    public string Browser { get; set; } = "";
+    public string Language { get; set; } = "";
+    public string Timezone { get; set; } = "";
+    public string Screen { get; set; } = "";
+    public string Geo { get; set; } = "";
+    public string Isp { get; set; } = "";
+    public string UserAgent { get; set; } = "";
+    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }
