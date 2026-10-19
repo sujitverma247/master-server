@@ -91,13 +91,16 @@ public static class LicenseApi
         await db.SaveChangesAsync(ct);
         await tx.CommitAsync(ct);
 
+        var (email, name) = CustomerOf(license);
         return Json(StatusCodes.Status200OK, new
         {
             valid = true,
             isActive = true,
             expiresAt = FormatExpiry(license.ExpiresAt),
             planType = license.PlanType,
-            maxMachines = license.MaxMachines
+            maxMachines = license.MaxMachines,
+            email,
+            name
         });
     }
 
@@ -111,13 +114,15 @@ public static class LicenseApi
         if (string.IsNullOrWhiteSpace(key))
             return Fail(StatusCodes.Status400BadRequest, "missing key parameter");
 
-        var license = await db.Licenses.FirstOrDefaultAsync(l => l.Key == key && l.ProductId == ok.Product.Id, ct);
+        var license = await db.Licenses.Include(l => l.Customer)
+            .FirstOrDefaultAsync(l => l.Key == key && l.ProductId == ok.Product.Id, ct);
         if (license is null)
             return Fail(StatusCodes.Status404NotFound, "invalid license key");
 
         var now = DateTime.UtcNow;
         var expired = LicenseTerm.IsExpired(license.ExpiresAt, now);
         var valid = !license.IsRevoked && license.IsActive && !expired;
+        var (email, name) = CustomerOf(license);
 
         var machineId = ctx.Request.Query["machineId"].ToString().Trim();
         if (machineId.Length == 0)
@@ -129,7 +134,9 @@ public static class LicenseApi
                 isRevoked = license.IsRevoked,
                 expired,
                 expiresAt = FormatExpiry(license.ExpiresAt),
-                planType = license.PlanType
+                planType = license.PlanType,
+                email,
+                name
             });
         }
 
@@ -145,7 +152,9 @@ public static class LicenseApi
             planType = license.PlanType,
             machineId,
             machineSeated = seat is not null,
-            lastSeenAt = seat is null ? "" : FormatExpiry(seat.LastSeenAt ?? seat.ActivatedAt)
+            lastSeenAt = seat is null ? "" : FormatExpiry(seat.LastSeenAt ?? seat.ActivatedAt),
+            email,
+            name
         });
     }
 
@@ -196,7 +205,8 @@ public static class LicenseApi
         if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(machineId))
             return Fail(StatusCodes.Status400BadRequest, "missing key or machineId");
 
-        var license = await db.Licenses.FirstOrDefaultAsync(l => l.Key == key && l.ProductId == ok.Product.Id, ct);
+        var license = await db.Licenses.Include(l => l.Customer)
+            .FirstOrDefaultAsync(l => l.Key == key && l.ProductId == ok.Product.Id, ct);
         if (license is null)
             return Fail(StatusCodes.Status404NotFound, "invalid license key");
 
@@ -234,6 +244,7 @@ public static class LicenseApi
         await db.Heartbeats.Where(h => h.SeenAt < cutoff).ExecuteDeleteAsync(ct);
         await db.SaveChangesAsync(ct);
 
+        var (email, name) = CustomerOf(license);
         return Json(StatusCodes.Status200OK, new
         {
             valid = true,
@@ -243,7 +254,9 @@ public static class LicenseApi
             expiresAt = FormatExpiry(license.ExpiresAt),
             planType = license.PlanType,
             machineId,
-            lastSeenAt = FormatExpiry(now)
+            lastSeenAt = FormatExpiry(now),
+            email,
+            name
         });
     }
 
@@ -251,6 +264,15 @@ public static class LicenseApi
 
     private static string FormatExpiry(DateTime? expiresAt) =>
         expiresAt is DateTime value ? value.ToString("o") : "";
+
+    private static (string email, string name) CustomerOf(License license)
+    {
+        var email = license.Customer?.Email;
+        if (string.IsNullOrWhiteSpace(email))
+            email = license.CustomerEmail;
+        var name = license.Customer?.DisplayName ?? "";
+        return (email ?? "", name);
+    }
 
     private static async Task<JsonElement?> ReadBodyAsync(HttpContext ctx, CancellationToken ct)
     {

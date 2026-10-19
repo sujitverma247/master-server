@@ -7,26 +7,30 @@ public static class ProductSeed
 {
     public static async Task ApplyAsync(AppDb db, IConfiguration config, ILogger logger, CancellationToken ct)
     {
-        var appKey = First(config, "PRODUCT_APP_KEY", "Product:AppKey");
         var secret = First(config, "PRODUCT_HMAC_SECRET", "Product:HmacSecret");
+        var appKey = First(config, "PRODUCT_APP_KEY", "Product:AppKey");
         var userAgentPrefix = First(config, "PRODUCT_USER_AGENT_PREFIX", "Product:UserAgentPrefix");
-        if (string.IsNullOrWhiteSpace(appKey) || string.IsNullOrWhiteSpace(secret) || string.IsNullOrWhiteSpace(userAgentPrefix))
-        {
-            logger.LogInformation("No product configuration found. License routes stay inactive until a product row exists.");
-            return;
-        }
-
         var slug = First(config, "PRODUCT_SLUG", "Product:Slug");
-        if (string.IsNullOrWhiteSpace(slug))
-            slug = "default";
         var displayName = First(config, "PRODUCT_DISPLAY_NAME", "Product:DisplayName");
-        if (string.IsNullOrWhiteSpace(displayName))
-            displayName = "Product";
         var keyPrefix = First(config, "PRODUCT_KEY_PREFIX", "Product:KeyPrefix");
 
-        var product = await db.Products.FirstOrDefaultAsync(p => p.AppKey == appKey, ct);
+        var product = await ResolveProductAsync(db, appKey, slug, ct);
+
         if (product is null)
         {
+            // Creating a product still needs identity. HMAC-only env cannot invent an app key.
+            if (string.IsNullOrWhiteSpace(secret) || string.IsNullOrWhiteSpace(appKey) || string.IsNullOrWhiteSpace(userAgentPrefix))
+            {
+                logger.LogInformation(
+                    "No product row to update. Set AppKey and User-Agent in Admin, or set PRODUCT_APP_KEY + PRODUCT_USER_AGENT_PREFIX to create one.");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(slug))
+                slug = "default";
+            if (string.IsNullOrWhiteSpace(displayName))
+                displayName = "Product";
+
             var slugTaken = await db.Products.AnyAsync(p => p.Slug == slug, ct);
             if (slugTaken)
                 throw new InvalidOperationException("PRODUCT_SLUG is already used by a different app key.");
@@ -44,17 +48,34 @@ public static class ProductSeed
             };
             db.Products.Add(product);
             await db.SaveChangesAsync(ct);
-            logger.LogInformation("Configured product {Slug}.", product.Slug);
+            logger.LogInformation("Configured product {Slug} from environment.", product.Slug);
         }
         else
         {
-            product.UserAgentPrefix = userAgentPrefix;
-            product.HmacSecret = secret;
-            product.IsActive = true;
-            if (!string.IsNullOrWhiteSpace(keyPrefix))
+            // Product already exists (Admin). AppKey + User-Agent stay as stored there.
+            // Env HMAC, if set, is applied so the desktop LICENSE_HMAC_SECRET can match.
+            var changed = false;
+            if (!string.IsNullOrWhiteSpace(secret) && product.HmacSecret != secret)
+            {
+                product.HmacSecret = secret;
+                changed = true;
+            }
+            if (!string.IsNullOrWhiteSpace(keyPrefix) && product.KeyPrefix != keyPrefix)
+            {
                 product.KeyPrefix = keyPrefix;
-            await db.SaveChangesAsync(ct);
-            logger.LogInformation("Updated credentials for product {Slug}.", product.Slug);
+                changed = true;
+            }
+            if (!product.IsActive)
+            {
+                product.IsActive = true;
+                changed = true;
+            }
+            if (changed)
+            {
+                await db.SaveChangesAsync(ct);
+                logger.LogInformation("Updated HMAC for product {Slug} from environment. AppKey={AppKey} UserAgentPrefix={Prefix} kept from Admin.",
+                    product.Slug, product.AppKey, product.UserAgentPrefix);
+            }
         }
 
         var seedKey = First(config, "SEED_LICENSE_KEY", "License:SeedKey");
@@ -87,6 +108,23 @@ public static class ProductSeed
         });
         await db.SaveChangesAsync(ct);
         logger.LogInformation("Seeded one license for product {Slug}.", product.Slug);
+    }
+
+    /// <summary>
+    /// Prefer the Admin product. Env PRODUCT_APP_KEY / PRODUCT_SLUG only disambiguate when several exist.
+    /// </summary>
+    internal static async Task<Product?> ResolveProductAsync(AppDb db, string appKey, string slug, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(appKey))
+            return await db.Products.FirstOrDefaultAsync(p => p.AppKey == appKey, ct);
+
+        if (!string.IsNullOrWhiteSpace(slug))
+            return await db.Products.FirstOrDefaultAsync(p => p.Slug == slug, ct);
+
+        var count = await db.Products.CountAsync(ct);
+        if (count == 1)
+            return await db.Products.FirstAsync(ct);
+        return null;
     }
 
     private static string First(IConfiguration config, string envName, string configKey)

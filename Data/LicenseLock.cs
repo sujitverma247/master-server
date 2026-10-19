@@ -36,6 +36,7 @@ internal static class LicenseLock
 
         return await db.Licenses
             .Include(l => l.Activations)
+            .Include(l => l.Customer)
             .FirstAsync(l => l.Id == Convert.ToInt32(id), ct);
     }
 }
