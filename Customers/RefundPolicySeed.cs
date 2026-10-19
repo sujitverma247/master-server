@@ -17,7 +17,7 @@ public static class RefundPolicySeed
         {
             Version = DefaultVersion,
             Title = "Refund policy",
-            Body = "Purchases are refundable within 14 days of the most recent payment if you contact support. After 14 days, refunds are at the seller's discretion. Subscriptions may be cancelled at any time; unused time after the refund window is not automatically refunded. Accepting this policy is required before completing a purchase.",
+            Body = "Personal software purchases are refundable within 30 calendar days of the initial payment if you contact support. After 30 days, refunds are at the seller's discretion unless applicable law requires otherwise. Subscriptions may be cancelled at any time; unused time after the refund window is not automatically refunded. Payment partners may process the refund on the original payment method. Accepting this policy is required before completing a purchase. The full Refund Policy is published at https://europedigisystems.com/legal/refund.",
             IsCurrent = true,
             EffectiveAt = DateTime.UtcNow,
             CreatedAt = DateTime.UtcNow

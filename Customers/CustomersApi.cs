@@ -347,6 +347,7 @@ public static class CustomersApi
 
         var displayName = Str(body.Value, "displayName");
         var customer = await CustomerStore.FindOrCreateAsync(db, email, displayName, "policy-accept", ct);
+        CustomerStore.ApplyPhone(customer, Str(body.Value, "phone"));
         await db.SaveChangesAsync(ct);
 
         var existing = await db.RefundPolicyAcceptances

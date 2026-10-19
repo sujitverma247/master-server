@@ -3,6 +3,7 @@ using MasterServer.Analytics;
 using MasterServer.Catalog;
 using MasterServer.Customers;
 using MasterServer.Data;
+using MasterServer.Security;
 using MasterServer.Keys;
 using MasterServer.Licensing;
 using MasterServer.Mail;
@@ -25,14 +26,13 @@ var connectionString = ConnectionStrings.Normalize(rawConnection);
 builder.Services.AddDbContext<AppDb>(options => options.UseNpgsql(connectionString));
 
 const string AdminCorsPolicy = "admin-panel";
-var adminOrigins = (Environment.GetEnvironmentVariable("ADMIN_ORIGIN") ?? builder.Configuration["Admin:Origin"] ?? "")
-    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+var corsOrigins = CorsOrigins.FromEnvironment(builder.Configuration);
 builder.Services.AddCors(options =>
 {
     options.AddPolicy(AdminCorsPolicy, policy =>
     {
-        if (adminOrigins.Length > 0)
-            policy.WithOrigins(adminOrigins)
+        if (corsOrigins.Length > 0)
+            policy.WithOrigins(corsOrigins)
                 .AllowAnyHeader()
                 .AllowAnyMethod()
                 .AllowCredentials()
@@ -74,6 +74,7 @@ CatalogApi.Map(app, skewSeconds);
 var mail = MailSenderFactory.FromEnvironment();
 KeysApi.Map(app, mail);
 CustomersApi.Map(app);
+CheckoutApi.Map(app);
 var gateways = GatewayRegistry.FromEnvironment();
 PaymentsApi.Map(app, gateways, mail);
 MailApi.Map(app, mail);
