@@ -17,6 +17,7 @@ public static class PaymentsApi
     {
         app.MapPost("/v1/checkout", (HttpContext c, AppDb db, CancellationToken ct) => Create(c, db, gateways, ct));
         app.MapGet("/v1/checkout/{publicId}", (string publicId, HttpContext c, AppDb db, CancellationToken ct) => GetPublic(publicId, db, ct));
+        OrderStatusApi.Map(app);
         app.MapPost("/v1/webhooks/{gateway}", (string gateway, HttpContext c, AppDb db, CancellationToken ct) => Webhook(gateway, c, db, gateways, mail, ct));
         app.MapPost("/webhooks/{gateway}", (string gateway, HttpContext c, AppDb db, CancellationToken ct) => Webhook(gateway, c, db, gateways, mail, ct));
 
