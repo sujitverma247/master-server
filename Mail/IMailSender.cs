@@ -2,7 +2,7 @@ namespace MasterServer.Mail;
 
 public sealed record MailSendResult(bool Ok, string Provider, string? MessageId, string? Error);
 
-/// <summary>One delivery backend. Console for local; SMTP when MAIL_SMTP_HOST is set.</summary>
+/// <summary>One delivery backend. Console for local; SMTP or Brevo when configured.</summary>
 public interface IMailSender
 {
     string Name { get; }

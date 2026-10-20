@@ -72,6 +72,10 @@ var sessionHours = builder.Configuration.GetValue("Admin:SessionHours", 12);
 AdminApi.Map(app, sessionHours);
 CatalogApi.Map(app, skewSeconds);
 var mail = MailSenderFactory.FromEnvironment();
+if (mail.Name == ConsoleMailSender.ProviderName)
+    app.Logger.LogWarning("Mail provider is console — license emails are queued but not delivered. Set MAIL_PROVIDER=brevo with BREVO_API_KEY, or MAIL_PROVIDER=smtp.");
+else
+    app.Logger.LogInformation("Mail provider {Provider} from {From}", mail.Name, MailSenderFactory.DefaultFromEmail());
 KeysApi.Map(app, mail);
 CustomersApi.Map(app);
 CheckoutApi.Map(app);

@@ -5,6 +5,13 @@ public static class MailSenderFactory
     public static IMailSender FromEnvironment()
     {
         var provider = (Environment.GetEnvironmentVariable("MAIL_PROVIDER") ?? "console").Trim().ToLowerInvariant();
+        var brevoKey = (Environment.GetEnvironmentVariable("BREVO_API_KEY") ?? "").Trim();
+        if (provider == BrevoMailSender.ProviderName || (provider is "console" or "" && brevoKey.Length > 0))
+        {
+            if (brevoKey.Length > 0)
+                return new BrevoMailSender(brevoKey);
+        }
+
         var host = Environment.GetEnvironmentVariable("MAIL_SMTP_HOST") ?? "";
         if (provider == SmtpMailSender.ProviderName && host.Length > 0)
         {

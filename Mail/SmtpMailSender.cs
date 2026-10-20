@@ -42,7 +42,7 @@ public sealed class SmtpMailSender : IMailSender
                 From = new System.Net.Mail.MailAddress(fromEmail, fromName),
                 Subject = subject,
                 Body = body,
-                IsBodyHtml = false
+                IsBodyHtml = true
             };
             msg.To.Add(new System.Net.Mail.MailAddress(toEmail, toName));
             await client.SendMailAsync(msg, ct);

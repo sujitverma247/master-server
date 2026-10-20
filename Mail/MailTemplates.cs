@@ -1,85 +1,32 @@
 namespace MasterServer.Mail;
 
-/// <summary>Brand-neutral template ids and bodies. Names/support addresses come from vars, not source.</summary>
+/// <summary>Brand-neutral template ids. Names/support addresses come from vars, not source.</summary>
 public static class MailTemplates
 {
     public const string LicenseIssued = "license.issued";
     public const string OrderRefunded = "order.refunded";
 
-    public static readonly IReadOnlyDictionary<string, MailTemplate> Catalog = new Dictionary<string, MailTemplate>
+    public static bool IsKnown(string template) =>
+        template is LicenseIssued or OrderRefunded;
+
+    public static IEnumerable<MailTemplate> All()
     {
-        [LicenseIssued] = new(
-            "Your {{productName}} license key",
-            """
-            Hello {{customerName}},
-
-            Thank you for your purchase of {{productName}} ({{planType}}).
-
-            Your license key:
-            {{licenseKey}}
-
-            Keep this email. You will need the key to activate the product.
-            If you have questions, contact {{supportEmail}}.
-
-            {{brandName}}
-            """),
-        [OrderRefunded] = new(
-            "Refund processed for {{productName}}",
-            """
-            Hello {{customerName}},
-
-            A refund was processed for your {{productName}} order {{orderPublicId}}.
-            The associated license key is no longer valid.
-
-            If you have questions, contact {{supportEmail}}.
-
-            {{brandName}}
-            """)
-    };
-
-    public static readonly IReadOnlyDictionary<string, MailTemplate> CatalogDe = new Dictionary<string, MailTemplate>
-    {
-        [LicenseIssued] = new(
-            "Ihr {{productName}} Lizenzschlüssel",
-            """
-            Hallo {{customerName}},
-
-            vielen Dank für Ihren Kauf von {{productName}} ({{planType}}).
-
-            Ihr Lizenzschlüssel:
-            {{licenseKey}}
-
-            Bewahren Sie diese E-Mail auf. Sie benötigen den Schlüssel zur Aktivierung des Produkts.
-            Bei Fragen wenden Sie sich an {{supportEmail}}.
-
-            {{brandName}}
-            """),
-        [OrderRefunded] = new(
-            "Rückerstattung für {{productName}} ausgeführt",
-            """
-            Hallo {{customerName}},
-
-            für Ihre Bestellung {{orderPublicId}} von {{productName}} wurde eine Rückerstattung ausgeführt.
-            Der zugehörige Lizenzschlüssel ist nicht mehr gültig.
-
-            Bei Fragen wenden Sie sich an {{supportEmail}}.
-
-            {{brandName}}
-            """)
-    };
-
-    public static bool IsKnown(string template) => Catalog.ContainsKey(template);
-
-    public static MailTemplate Resolve(string templateId, string? locale)
-    {
-        if (!Catalog.TryGetValue(templateId, out var english))
-            throw new ArgumentOutOfRangeException(nameof(templateId), "unknown mail template");
-        if (MailLocale.IsGerman(locale) && CatalogDe.TryGetValue(templateId, out var german))
-            return german;
-        return english;
+        var tokens = new MailVars(
+            ProductName: "{{productName}}",
+            BrandName: "{{brandName}}",
+            SupportEmail: "{{supportEmail}}",
+            CustomerName: "{{customerName}}",
+            CustomerEmail: "{{customerEmail}}",
+            LicenseKey: "{{licenseKey}}",
+            PlanType: "",
+            OrderPublicId: "{{orderPublicId}}");
+        yield return ToTemplate(WelcomeMail.Build(tokens, MailLocale.English));
+        yield return ToTemplate(WelcomeMail.Build(tokens, MailLocale.German));
+        yield return ToTemplate(RefundMail.Build(tokens, MailLocale.English));
+        yield return ToTemplate(RefundMail.Build(tokens, MailLocale.German));
     }
 
-    public static IEnumerable<MailTemplate> All() => Catalog.Values.Concat(CatalogDe.Values);
+    private static MailTemplate ToTemplate(RenderedMail mail) => new(mail.Subject, mail.Body);
 }
 
 public sealed record MailTemplate(string Subject, string Body);

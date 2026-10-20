@@ -6,9 +6,9 @@ namespace MasterServer.Tests;
 public class MailRendererTests
 {
     private static MailVars Sample() => new(
-        ProductName: "Northwind Guard",
-        BrandName: "Northwind",
-        SupportEmail: "help@northwind.example",
+        ProductName: "Europe Digi Smart Security",
+        BrandName: "Europe Digi Systems",
+        SupportEmail: "contact@europedigisystems.com",
         CustomerName: "Ada",
         CustomerEmail: "ada@example.com",
         LicenseKey: "ABCD-EFGH",
@@ -16,13 +16,24 @@ public class MailRendererTests
         OrderPublicId: "pub1");
 
     [Fact]
-    public void License_issued_substitutes_vars()
+    public void License_issued_matches_previous_server_layout()
     {
         var mail = MailRenderer.Render(MailTemplates.LicenseIssued, Sample());
-        Assert.Contains("Northwind Guard", mail.Subject);
+        Assert.Equal("Welcome to Europe Digi Smart Security – Thank You for Choosing Us", mail.Subject);
+        Assert.Contains("Dear Ada,", mail.Body);
+        Assert.Contains("<strong>Europe Digi Smart Security</strong>", mail.Body);
+        Assert.Contains("Your product activation key is:", mail.Body);
         Assert.Contains("ABCD-EFGH", mail.Body);
-        Assert.Contains("help@northwind.example", mail.Body);
-        Assert.Contains("Ada", mail.Body);
+        Assert.Contains("Your plan:", mail.Body);
+        Assert.Contains("1 Year", mail.Body);
+        Assert.Contains("mailto:contact@europedigisystems.com", mail.Body);
+        Assert.Contains("contact@europedigisystems.com", mail.Body);
+        Assert.Contains("30-day money-back guarantee", mail.Body);
+        Assert.Contains("Monday through Friday, from 9:00 AM to 6:00 PM", mail.Body);
+        Assert.Contains("Support Team", mail.Body);
+        Assert.Contains("Europe Digi Systems", mail.Body);
+        Assert.DoesNotContain("Firewall", mail.Body);
+        Assert.DoesNotContain("deutschesoftwares.com", mail.Body);
         Assert.DoesNotContain("{{", mail.Subject);
         Assert.DoesNotContain("{{", mail.Body);
     }
@@ -33,6 +44,8 @@ public class MailRendererTests
         var mail = MailRenderer.Render(MailTemplates.OrderRefunded, Sample());
         Assert.Contains("pub1", mail.Body);
         Assert.Contains("no longer valid", mail.Body);
+        Assert.Contains("mailto:contact@europedigisystems.com", mail.Body);
+        Assert.Contains("<div", mail.Body);
     }
 
     [Fact]
@@ -45,13 +58,16 @@ public class MailRendererTests
     public void German_license_uses_same_layout()
     {
         var mail = MailRenderer.Render(MailTemplates.LicenseIssued, Sample(), "de-DE");
-        Assert.Contains("Lizenzschlüssel", mail.Subject);
-        Assert.Contains("Hallo Ada", mail.Body);
+        Assert.Contains("Willkommen bei Europe Digi Smart Security", mail.Subject);
+        Assert.Contains("Sehr geehrte Damen und Herren Ada", mail.Body);
+        Assert.Contains("Produkt-Aktivierungsschlüssel", mail.Body);
         Assert.Contains("ABCD-EFGH", mail.Body);
-        Assert.Contains("help@northwind.example", mail.Body);
+        Assert.Contains("1 Jahr", mail.Body);
+        Assert.Contains("mailto:contact@europedigisystems.com", mail.Body);
         Assert.DoesNotContain("{{", mail.Subject);
         Assert.DoesNotContain("{{", mail.Body);
-        Assert.DoesNotContain("Thank you", mail.Body);
+        Assert.DoesNotContain("Thank you for choosing", mail.Body);
+        Assert.DoesNotContain("Deutsche Softwares", mail.Body);
     }
 
     [Fact]
@@ -68,8 +84,8 @@ public class MailRendererTests
     public void Unknown_locale_falls_back_to_english()
     {
         var mail = MailRenderer.Render(MailTemplates.LicenseIssued, Sample(), "fr-FR");
-        Assert.Contains("license key", mail.Subject);
-        Assert.Contains("Thank you", mail.Body);
+        Assert.Contains("Thank You for Choosing Us", mail.Subject);
+        Assert.Contains("Dear Ada,", mail.Body);
     }
 
     [Fact]
@@ -89,5 +105,22 @@ public class MailRendererTests
         Assert.True(MailTemplates.IsKnown(MailTemplates.LicenseIssued));
         Assert.True(MailTemplates.IsKnown(MailTemplates.OrderRefunded));
         Assert.False(MailTemplates.IsKnown("invoice.pdf"));
+    }
+
+    [Fact]
+    public void Html_encodes_customer_name()
+    {
+        var vars = Sample() with { CustomerName = "<script>x</script>" };
+        var mail = MailRenderer.Render(MailTemplates.LicenseIssued, vars);
+        Assert.DoesNotContain("<script>", mail.Body);
+        Assert.Contains("&lt;script&gt;x&lt;/script&gt;", mail.Body);
+    }
+
+    [Fact]
+    public void Empty_name_uses_customer_in_english()
+    {
+        var vars = Sample() with { CustomerName = "" };
+        var mail = MailRenderer.Render(MailTemplates.LicenseIssued, vars);
+        Assert.Contains("Dear Customer,", mail.Body);
     }
 }

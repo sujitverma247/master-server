@@ -1,4 +1,5 @@
 using MasterServer.Licensing;
+using MasterServer.Mail;
 using Microsoft.EntityFrameworkCore;
 
 namespace MasterServer.Data;
@@ -65,6 +66,11 @@ public static class ProductSeed
                 product.KeyPrefix = keyPrefix;
                 changed = true;
             }
+            if (!string.IsNullOrWhiteSpace(displayName) && product.DisplayName != displayName)
+            {
+                product.DisplayName = displayName;
+                changed = true;
+            }
             if (!product.IsActive)
             {
                 product.IsActive = true;
@@ -73,10 +79,12 @@ public static class ProductSeed
             if (changed)
             {
                 await db.SaveChangesAsync(ct);
-                logger.LogInformation("Updated HMAC for product {Slug} from environment. AppKey={AppKey} UserAgentPrefix={Prefix} kept from Admin.",
+                logger.LogInformation("Updated product {Slug} from environment. AppKey={AppKey} UserAgentPrefix={Prefix} kept from Admin.",
                     product.Slug, product.AppKey, product.UserAgentPrefix);
             }
         }
+
+        await EnsureBrandAsync(db, product, logger, ct);
 
         var seedKey = First(config, "SEED_LICENSE_KEY", "License:SeedKey");
         if (string.IsNullOrWhiteSpace(seedKey))
@@ -125,6 +133,83 @@ public static class ProductSeed
         if (count == 1)
             return await db.Products.FirstAsync(ct);
         return null;
+    }
+
+    private static async Task EnsureBrandAsync(AppDb db, Product product, ILogger logger, CancellationToken ct)
+    {
+        var fromEmail = MailSenderFactory.DefaultFromEmail();
+        var fromName = MailSenderFactory.DefaultFromName();
+        var website = PublicWebsite();
+        if (fromEmail.Length == 0 && fromName is "Support" or "")
+            return;
+
+        await db.Entry(product).Reference(p => p.Brand).LoadAsync(ct);
+        var brand = product.Brand;
+        var changed = false;
+        if (brand is null)
+        {
+            var slug = BrandSlug(fromName.Length > 0 && fromName != "Support" ? fromName : "brand");
+            brand = await db.Brands.FirstOrDefaultAsync(b => b.Slug == slug, ct);
+            if (brand is null)
+            {
+                brand = new Brand
+                {
+                    Slug = slug,
+                    Name = fromName.Length > 0 ? fromName : "Support",
+                    SupportEmail = fromEmail,
+                    WebsiteUrl = website,
+                    IsActive = true,
+                    CreatedAt = DateTime.UtcNow
+                };
+                db.Brands.Add(brand);
+                await db.SaveChangesAsync(ct);
+            }
+            product.BrandId = brand.Id;
+            product.Brand = brand;
+            changed = true;
+        }
+
+        if (fromName.Length > 0 && fromName != "Support" && brand.Name != fromName)
+        {
+            brand.Name = fromName;
+            changed = true;
+        }
+        if (fromEmail.Length > 0 && brand.SupportEmail != fromEmail)
+        {
+            brand.SupportEmail = fromEmail;
+            changed = true;
+        }
+        if (website.Length > 0 && brand.WebsiteUrl.Length == 0)
+        {
+            brand.WebsiteUrl = website;
+            changed = true;
+        }
+        if (changed)
+        {
+            await db.SaveChangesAsync(ct);
+            logger.LogInformation("Mail brand {Name} support {Email} for product {Slug}.", brand.Name, brand.SupportEmail, product.Slug);
+        }
+    }
+
+    private static string PublicWebsite()
+    {
+        var raw = Environment.GetEnvironmentVariable("WEBSITE_ORIGIN") ?? "";
+        foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                return part.TrimEnd('/');
+        }
+        return "";
+    }
+
+    private static string BrandSlug(string name)
+    {
+        var chars = name.Trim().ToLowerInvariant().Select(c => char.IsLetterOrDigit(c) ? c : '-').ToArray();
+        var slug = new string(chars);
+        while (slug.Contains("--", StringComparison.Ordinal))
+            slug = slug.Replace("--", "-", StringComparison.Ordinal);
+        slug = slug.Trim('-');
+        return slug.Length > 0 ? slug : "brand";
     }
 
     private static string First(IConfiguration config, string envName, string configKey)

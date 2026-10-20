@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.RegularExpressions;
 
 namespace MasterServer.Mail;
@@ -8,8 +9,11 @@ public static class MailRenderer
 
     public static RenderedMail Render(string templateId, MailVars vars, string? locale = null)
     {
-        var template = MailTemplates.Resolve(templateId, locale);
-        return new RenderedMail(Replace(template.Subject, vars), Replace(template.Body, vars));
+        if (!MailTemplates.IsKnown(templateId))
+            throw new ArgumentOutOfRangeException(nameof(templateId), "unknown mail template");
+        return templateId == MailTemplates.LicenseIssued
+            ? WelcomeMail.Build(vars, locale)
+            : RefundMail.Build(vars, locale);
     }
 
     public static string Replace(string source, MailVars vars)
@@ -25,7 +29,9 @@ public static class MailRenderer
             ["planType"] = vars.PlanType,
             ["orderPublicId"] = vars.OrderPublicId
         };
-        return Token.Replace(source, m => map.TryGetValue(m.Groups[1].Value, out var v) ? v : m.Value);
+        return Token.Replace(source, m => map.TryGetValue(m.Groups[1].Value, out var v)
+            ? WebUtility.HtmlEncode(v)
+            : m.Value);
     }
 }
 
