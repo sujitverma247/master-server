@@ -23,14 +23,18 @@ public static class PlanCatalog
         return DefaultDurationDays(code);
     }
 
-    public static int DefaultDurationDays(string planType) => planType.Trim().ToLowerInvariant() switch
+    public static int DefaultDurationDays(string planType)
     {
-        "monthly" => 30,
-        "1year" => 365,
-        "2year" => 730,
-        "3year" => 1095,
-        "5year" => 1825,
-        "lifetime" => 36500,
-        _ => 365
-    };
+        var code = (planType ?? "").Trim().ToLowerInvariant();
+        if (code == "monthly") return 30;
+        if (code == "lifetime") return 36500;
+        if (code.EndsWith("year", StringComparison.Ordinal)
+            && int.TryParse(code[..^4], out var years)
+            && years is >= 1 and <= 10)
+        {
+            return years * 365;
+        }
+
+        return 365;
+    }
 }
