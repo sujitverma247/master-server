@@ -19,17 +19,17 @@ public class MailRendererTests
     public void License_issued_matches_previous_server_layout()
     {
         var mail = MailRenderer.Render(MailTemplates.LicenseIssued, Sample());
-        Assert.Equal("Welcome to Europe Digi Smart Security – Thank You for Choosing Us", mail.Subject);
+        Assert.Equal("Welcome to Europe Digi Smart Security – Thanks for Your Trust", mail.Subject);
         Assert.Contains("Dear Ada,", mail.Body);
         Assert.Contains("<strong>Europe Digi Smart Security</strong>", mail.Body);
-        Assert.Contains("Your product activation key is:", mail.Body);
+        Assert.Contains("Your activation key:", mail.Body);
         Assert.Contains("ABCD-EFGH", mail.Body);
         Assert.Contains("Your plan:", mail.Body);
         Assert.Contains("1 Year", mail.Body);
         Assert.Contains("mailto:contact@europedigisystems.com", mail.Body);
         Assert.Contains("contact@europedigisystems.com", mail.Body);
         Assert.Contains("30-day money-back guarantee", mail.Body);
-        Assert.Contains("Monday through Friday, from 9:00 AM to 6:00 PM", mail.Body);
+        Assert.Contains("Monday through Friday, 9:00 AM to 6:00 PM", mail.Body);
         Assert.Contains("Support Team", mail.Body);
         Assert.Contains("Europe Digi Systems", mail.Body);
         Assert.DoesNotContain("Firewall", mail.Body);
@@ -60,7 +60,7 @@ public class MailRendererTests
         var mail = MailRenderer.Render(MailTemplates.LicenseIssued, Sample(), "de-DE");
         Assert.Contains("Willkommen bei Europe Digi Smart Security", mail.Subject);
         Assert.Contains("Sehr geehrte Damen und Herren Ada", mail.Body);
-        Assert.Contains("Produkt-Aktivierungsschlüssel", mail.Body);
+        Assert.Contains("Aktivierungsschlüssel", mail.Body);
         Assert.Contains("ABCD-EFGH", mail.Body);
         Assert.Contains("1 Jahr", mail.Body);
         Assert.Contains("mailto:contact@europedigisystems.com", mail.Body);
@@ -84,7 +84,7 @@ public class MailRendererTests
     public void Unknown_locale_falls_back_to_english()
     {
         var mail = MailRenderer.Render(MailTemplates.LicenseIssued, Sample(), "fr-FR");
-        Assert.Contains("Thank You for Choosing Us", mail.Subject);
+        Assert.Contains("Thanks for Your Trust", mail.Subject);
         Assert.Contains("Dear Ada,", mail.Body);
     }
 

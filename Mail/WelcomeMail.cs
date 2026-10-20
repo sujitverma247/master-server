@@ -3,8 +3,8 @@ using System.Net;
 namespace MasterServer.Mail;
 
 /// <summary>
-/// License-key HTML used by the previous server. Product name, support address, and
-/// brand come from vars so this deployment can say Europe Digi Smart Security.
+/// License-key welcome mail. Same facts and layout as the previous server;
+/// wording is our own. Product, support, and brand come from vars.
 /// </summary>
 public static class WelcomeMail
 {
@@ -20,11 +20,11 @@ public static class WelcomeMail
         if (de)
         {
             return new(
-                $"Willkommen bei {vars.ProductName} - Vielen Dank für Ihr Vertrauen",
+                $"Willkommen bei {vars.ProductName} – Danke für Ihr Vertrauen",
                 DeHtml(display, vars, plan));
         }
         return new(
-            $"Welcome to {vars.ProductName} – Thank You for Choosing Us",
+            $"Welcome to {vars.ProductName} – Thanks for Your Trust",
             EnHtml(display, vars, plan));
     }
 
@@ -46,14 +46,14 @@ public static class WelcomeMail
     private static string EnHtml(string name, MailVars vars, string plan) =>
         $@"<div style=""font-family:Segoe UI,Arial,sans-serif;max-width:600px;margin:auto;color:#121214;line-height:1.55"">
   <p style=""{ParaStyle}"">Dear {H(name)},</p>
-  <p style=""{ParaStyle}"">Thank you for choosing {P(vars.ProductName)}.</p>
-  <p style=""{ParaStyle}"">We are pleased to have you as a valued customer and are committed to providing reliable security and protection for your devices.</p>
-  <p style=""{ParaStyle}"">Your product activation key is: {K(vars.LicenseKey)}</p>{PlanLine(false, plan)}
-  <p style=""{ParaStyle}"">If you require any assistance, our dedicated support team is available Monday through Friday, from 9:00 AM to 6:00 PM. You may contact us at
+  <p style=""{ParaStyle}"">Thank you for purchasing {P(vars.ProductName)}.</p>
+  <p style=""{ParaStyle}"">We are glad to have you with us and will keep your devices protected with reliable security.</p>
+  <p style=""{ParaStyle}"">Your activation key: {K(vars.LicenseKey)}</p>{PlanLine(false, plan)}
+  <p style=""{ParaStyle}"">If you need help, our support team is available Monday through Friday, 9:00 AM to 6:00 PM. You can reach us at
     {MailTo(vars.SupportEmail)}.</p>
-  <p style=""{ParaStyle}"">We also offer a 30-day money-back guarantee. If you wish to request a refund within this period, please contact us at
-    {MailTo(vars.SupportEmail)}, and our support team will be happy to assist you.</p>
-  <p style=""{ParaStyle}"">We sincerely appreciate your trust in {P(vars.ProductName)} and look forward to providing you with a secure, reliable, and dependable experience.</p>
+  <p style=""{ParaStyle}"">You also have a 30-day money-back guarantee. To request a refund in that period, write to
+    {MailTo(vars.SupportEmail)} and we will assist you.</p>
+  <p style=""{ParaStyle}"">Thank you for trusting {P(vars.ProductName)}. We look forward to a secure and dependable experience for you.</p>
   <p style=""margin:0"">Kind regards,<br>Support Team<br>{H(vars.BrandName)}</p>
 </div>";
 
@@ -64,14 +64,14 @@ public static class WelcomeMail
             : $"Sehr geehrte Damen und Herren {H(name)}";
         return $@"<div style=""font-family:Segoe UI,Arial,sans-serif;max-width:600px;margin:auto;color:#121214;line-height:1.55"">
   <p style=""{ParaStyle}"">{greeting},</p>
-  <p style=""{ParaStyle}"">vielen Dank, dass Sie sich für {P(vars.ProductName)} entschieden haben.</p>
-  <p style=""{ParaStyle}"">Wir freuen uns, Sie als geschätzten Kunden begrüßen zu dürfen, und sind bestrebt, Ihnen zuverlässige Sicherheit und Schutz für Ihre Geräte zu bieten.</p>
-  <p style=""{ParaStyle}"">Ihr Produkt-Aktivierungsschlüssel lautet: {K(vars.LicenseKey)}</p>{PlanLine(true, plan)}
-  <p style=""{ParaStyle}"">Sollten Sie Unterstützung benötigen, steht Ihnen unser engagiertes Support-Team Montag bis Freitag von 9:00 Uhr bis 18:00 Uhr gerne zur Verfügung. Sie erreichen uns unter:
+  <p style=""{ParaStyle}"">vielen Dank für Ihren Kauf von {P(vars.ProductName)}.</p>
+  <p style=""{ParaStyle}"">Wir begrüßen Sie gerne und sorgen für zuverlässigen Schutz Ihrer Geräte.</p>
+  <p style=""{ParaStyle}"">Ihr Aktivierungsschlüssel: {K(vars.LicenseKey)}</p>{PlanLine(true, plan)}
+  <p style=""{ParaStyle}"">Bei Fragen erreichen Sie unser Support-Team montags bis freitags von 9:00 bis 18:00 Uhr unter
     {MailTo(vars.SupportEmail)}.</p>
-  <p style=""{ParaStyle}"">Darüber hinaus bieten wir Ihnen eine 30-tägige Geld-zurück-Garantie. Wenn Sie innerhalb dieses Zeitraums eine Rückerstattung wünschen, kontaktieren Sie uns bitte unter
-    {MailTo(vars.SupportEmail)}. Unser Support-Team unterstützt Sie gerne bei Ihrem Anliegen.</p>
-  <p style=""{ParaStyle}"">Wir bedanken uns herzlich für Ihr Vertrauen in {P(vars.ProductName)} und freuen uns darauf, Ihnen eine sichere, zuverlässige und vertrauenswürdige Nutzung zu ermöglichen.</p>
+  <p style=""{ParaStyle}"">Sie haben 30 Tage Geld-zurück-Garantie. Für eine Rückerstattung in diesem Zeitraum schreiben Sie uns unter
+    {MailTo(vars.SupportEmail)} – wir helfen Ihnen gerne.</p>
+  <p style=""{ParaStyle}"">Danke für Ihr Vertrauen in {P(vars.ProductName)}. Wir freuen uns, Ihnen eine sichere und zuverlässige Nutzung zu bieten.</p>
   <p style=""margin:0"">Mit freundlichen Grüßen<br>Support-Team<br>{H(vars.BrandName)}</p>
 </div>";
     }
